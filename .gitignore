@@ -1,0 +1,26 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Node ----
+node_modules/
+frontend/dist/
+
+# ---- 环境变量（可能包含 API Key 等敏感信息，禁止入库） ----
+.env
+frontend/.env
+
+# ---- 业务数据（小说内容、备份不入库） ----
+data/novels/*
+data/backups/*
+!data/novels/.gitkeep
+!data/backups/.gitkeep
+
+# ---- 系统与编辑器 ----
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
