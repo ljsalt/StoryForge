@@ -86,10 +86,18 @@ def resolve_model_for_task(task: str) -> ResolvedModel | None:
     return None
 
 
-def build_adapter_for_task(task: str) -> tuple[BaseAdapter, ResolvedModel] | None:
-    """为后续生成调用准备适配器（解密密钥仅发生在后端内存中）。"""
-    resolved = resolve_model_for_task(task)
-    if resolved is None or not resolved.api_key_encrypted:
+def resolve_model_by_id(model_row_id: str, task: str) -> ResolvedModel | None:
+    """显式指定模型的路由解析（不解密密钥，仅用于预览与校验）。"""
+    resolved = _model_with_provider(model_row_id)
+    if resolved is None:
+        return None
+    resolved.task = task
+    resolved.resolved_from = "explicit"
+    return resolved
+
+
+def _build_adapter(resolved: ResolvedModel) -> tuple[BaseAdapter, ResolvedModel] | None:
+    if not resolved.api_key_encrypted:
         return None
     api_key = decrypt_api_key(resolved.api_key_encrypted)
     if not api_key:
@@ -101,3 +109,23 @@ def build_adapter_for_task(task: str) -> tuple[BaseAdapter, ResolvedModel] | Non
         get_settings().model_request_timeout,
     )
     return adapter, resolved
+
+
+def build_adapter_for_task(task: str) -> tuple[BaseAdapter, ResolvedModel] | None:
+    """为后续生成调用准备适配器（解密密钥仅发生在后端内存中）。"""
+    resolved = resolve_model_for_task(task)
+    if resolved is None:
+        return None
+    return _build_adapter(resolved)
+
+
+def build_adapter_for_explicit(
+    task: str, model_row_id: str
+) -> tuple[BaseAdapter, ResolvedModel] | None:
+    """本次调用显式指定的模型优先于任务配置；模型被停用/删除时返回 None。"""
+    resolved = _model_with_provider(model_row_id)
+    if resolved is None:
+        return None
+    resolved.task = task
+    resolved.resolved_from = "explicit"
+    return _build_adapter(resolved)

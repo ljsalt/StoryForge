@@ -16,7 +16,12 @@ from ..database.db import (
     NOVEL_STATUSES,
     get_connection,
 )
-from . import character_relation_service, character_service, world_service
+from . import (
+    chapter_service,
+    character_relation_service,
+    character_service,
+    world_service,
+)
 from .errors import ServiceError
 
 
@@ -96,11 +101,14 @@ def list_novels(search: str | None = None, status: str | None = None) -> list[di
 def get_novel(novel_id: str) -> dict:
     row = _fetch_row(novel_id)
     data = _to_out(row, _default_novel_id())
+    chapter_stats = chapter_service.get_stats(novel_id)
+    data["current_word_count"] = chapter_stats["total_word_count"]
     data["stats"] = {
-        "chapter_count": 0,
+        "chapter_count": chapter_stats["chapter_count"],
+        "completed_chapter_count": chapter_stats["completed_chapter_count"],
         "character_count": character_service.count_characters(novel_id),
         "character_relation_count": character_relation_service.count_relations(novel_id),
-        "word_count": 0,
+        "word_count": chapter_stats["total_word_count"],
         "world_entry_count": world_service.count_entries(novel_id),
     }
     return data
@@ -193,6 +201,11 @@ def delete_novel(novel_id: str) -> dict:
         conn.execute("DELETE FROM character_states WHERE character_id IN (SELECT id FROM characters WHERE novel_id = ?)", (novel_id,))
         conn.execute("DELETE FROM character_relations WHERE novel_id = ?", (novel_id,))
         conn.execute("DELETE FROM characters WHERE novel_id = ?", (novel_id,))
+        # 剧情数据：先清理事件参与人物关联，再删除事件与章节
+        conn.execute("DELETE FROM plot_event_characters WHERE novel_id = ?", (novel_id,))
+        conn.execute("DELETE FROM plot_events WHERE novel_id = ?", (novel_id,))
+        conn.execute("DELETE FROM chapters WHERE novel_id = ?", (novel_id,))
+        conn.execute("DELETE FROM ai_generation_tasks WHERE novel_id = ?", (novel_id,))
         conn.execute("DELETE FROM novels WHERE id = ?", (novel_id,))
         deleted = conn.execute(
             "DELETE FROM app_settings WHERE key = ? AND value = ?",

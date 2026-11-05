@@ -43,6 +43,8 @@ class ChatRequest:
     top_p: float = 0.9
     max_tokens: int | None = 512
     stream: bool = False  # 预留流式输出接口，本阶段未实现
+    # 可选的额外服务商参数（受保护键 model/messages/stream 不允许覆盖）
+    extra: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -51,6 +53,10 @@ class CompletionResult:
     model: str
     usage: dict = field(default_factory=dict)
     latency_ms: int = 0
+    # reasoning 模型的思维链（如 DeepSeek reasoning_content），与正文 content 严格区分
+    reasoning: str = ""
+    # 服务商返回的结束原因；'length' 表示达到 max_tokens 被截断
+    finish_reason: str | None = None
 
 
 class BaseAdapter:

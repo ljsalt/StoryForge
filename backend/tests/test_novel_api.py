@@ -72,6 +72,7 @@ def test_novel_detail(client):
     assert body["id"] == novel["id"]
     assert body["stats"] == {
         "chapter_count": 0,
+        "completed_chapter_count": 0,
         "character_count": 0,
         "character_relation_count": 0,
         "word_count": 0,

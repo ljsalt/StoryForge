@@ -267,10 +267,293 @@ CREATE TABLE IF NOT EXISTS character_relation_events (
     previous_data  TEXT NOT NULL DEFAULT '{}',
     new_data       TEXT NOT NULL DEFAULT '{}',
     story_time     TEXT,
-    chapter_id     TEXT,
+    chapter_id     TEXT REFERENCES chapters (id) ON DELETE SET NULL,
     sequence       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL
 );
+
+-- 章节：小说的叙事组织结构，按 sort_order / chapter_number 排序
+-- chapter_number 在同一小说内唯一，由服务层在创建与排序时维护
+-- word_count 由后端根据正文计算，不接受前端直接写入
+CREATE TABLE IF NOT EXISTS chapters (
+    id             TEXT PRIMARY KEY,
+    novel_id       TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_number INTEGER NOT NULL,
+    volume_number  INTEGER,
+    title          TEXT NOT NULL,
+    content        TEXT NOT NULL DEFAULT '',
+    summary        TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'planned'
+                   CHECK (status IN ('planned', 'drafting', 'completed')),
+    word_count     INTEGER NOT NULL DEFAULT 0,
+    sort_order     INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    UNIQUE (novel_id, chapter_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapters_novel
+    ON chapters (novel_id, sort_order, chapter_number);
+CREATE INDEX IF NOT EXISTS idx_chapters_status
+    ON chapters (novel_id, status);
+
+-- 剧情事件：故事事实（与人物关系变化历史相互独立，仅可关联同一章节）
+-- chapter_id 删除章节时置空，事件本身保留
+-- location_id 关联世界观条目，删除条目时置空；location_name 为地点名称快照
+-- story_time 是故事世界内的时间，与 created_at（系统记录时间）严格区分
+-- sequence 用于同一故事时间下的事件稳定排序
+CREATE TABLE IF NOT EXISTS plot_events (
+    id            TEXT PRIMARY KEY,
+    novel_id      TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_id    TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    event_type    TEXT NOT NULL DEFAULT '',
+    story_time    TEXT,
+    location_id   TEXT REFERENCES world_entries (id) ON DELETE SET NULL,
+    location_name TEXT NOT NULL DEFAULT '',
+    importance    TEXT NOT NULL DEFAULT 'normal'
+                  CHECK (importance IN ('low', 'normal', 'high', 'critical')),
+    sequence      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plot_events_novel
+    ON plot_events (novel_id, sequence, created_at);
+CREATE INDEX IF NOT EXISTS idx_plot_events_chapter
+    ON plot_events (novel_id, chapter_id);
+CREATE INDEX IF NOT EXISTS idx_plot_events_story_time
+    ON plot_events (novel_id, story_time);
+CREATE INDEX IF NOT EXISTS idx_plot_events_importance
+    ON plot_events (novel_id, importance);
+
+-- 供剧情事件参与者复合外键引用（从数据库层保证事件与参与者同属一本小说）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plot_events_id_novel
+    ON plot_events (id, novel_id);
+
+-- 事件参与人物：一个事件可有多个参与者，同一事件内同一人物只允许一条
+-- 复合外键同时保证关联的事件与人物都属于关系所在的小说
+CREATE TABLE IF NOT EXISTS plot_event_characters (
+    id               TEXT PRIMARY KEY,
+    novel_id         TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    event_id         TEXT NOT NULL,
+    character_id     TEXT NOT NULL,
+    participant_role TEXT NOT NULL DEFAULT '',
+    description      TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    UNIQUE (novel_id, event_id, character_id),
+    FOREIGN KEY (event_id, novel_id)
+        REFERENCES plot_events (id, novel_id) ON DELETE CASCADE,
+    FOREIGN KEY (character_id, novel_id)
+        REFERENCES characters (id, novel_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_plot_event_characters_event
+    ON plot_event_characters (novel_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_plot_event_characters_character
+    ON plot_event_characters (novel_id, character_id);
+
+-- 提示词模板：按任务类型组织，version 为当前版本号；
+-- 历史版本快照保存在 prompt_template_versions，支持查看与恢复
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    id                   TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL,
+    task_type            TEXT NOT NULL
+                         CHECK (task_type IN ('planner', 'writer', 'editor', 'assistant', 'default')),
+    description          TEXT NOT NULL DEFAULT '',
+    system_prompt        TEXT NOT NULL DEFAULT '',
+    user_prompt_template TEXT NOT NULL DEFAULT '',
+    version              INTEGER NOT NULL DEFAULT 1,
+    is_active            INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_templates_task
+    ON prompt_templates (task_type, is_active, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_template_versions (
+    id                   TEXT PRIMARY KEY,
+    template_id          TEXT NOT NULL REFERENCES prompt_templates (id) ON DELETE CASCADE,
+    version              INTEGER NOT NULL,
+    name                 TEXT NOT NULL,
+    task_type            TEXT NOT NULL,
+    description          TEXT NOT NULL DEFAULT '',
+    system_prompt        TEXT NOT NULL DEFAULT '',
+    user_prompt_template TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    UNIQUE (template_id, version)
+);
+
+-- AI 生成任务记录：审计与排错用途，只保存摘要与 Token 数据，
+-- 不保存完整提示词、完整正文和任何密钥信息
+CREATE TABLE IF NOT EXISTS ai_generation_tasks (
+    id                 TEXT PRIMARY KEY,
+    novel_id           TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    task_type          TEXT NOT NULL
+                       CHECK (task_type IN ('planner', 'writer', 'editor', 'assistant', 'default')),
+    model_id           TEXT,
+    model_identifier   TEXT NOT NULL DEFAULT '',
+    provider_id        TEXT,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    input_summary      TEXT NOT NULL DEFAULT '',
+    output_summary     TEXT NOT NULL DEFAULT '',
+    error_code         TEXT,
+    error_message      TEXT,
+    prompt_template_id TEXT,
+    template_version   INTEGER,
+    input_tokens       INTEGER,
+    output_tokens      INTEGER,
+    estimated_tokens   INTEGER,
+    truncated          INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    latency_ms         INTEGER,
+    started_at         TEXT,
+    heartbeat_at       TEXT,
+    completed_at       TEXT,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_tasks_novel
+    ON ai_generation_tasks (novel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_tasks_status
+    ON ai_generation_tasks (novel_id, status);
+
+-- ----------------------------- P4.1.2 单章节创作工作流 -----------------------------
+
+-- 创作会话：一次章节创作过程，严格归属于一部小说。
+-- chapter_id 可空（新建章节草稿时尚未写入正式章节），删除章节时置空，
+-- 因此不会留下无效外键；会话本身由 novel_id 级联清理。
+CREATE TABLE IF NOT EXISTS writing_sessions (
+    id                TEXT PRIMARY KEY,
+    novel_id          TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_id        TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'planning'
+                      CHECK (status IN ('planning', 'awaiting_plan_approval',
+                                        'writing', 'paused_for_user',
+                                        'draft_ready', 'completed',
+                                        'cancelled', 'failed')),
+    task_type         TEXT NOT NULL DEFAULT 'writer'
+                      CHECK (task_type IN ('planner', 'writer', 'editor',
+                                           'assistant', 'default')),
+    user_instruction  TEXT NOT NULL DEFAULT '',
+    pov_character_id  TEXT REFERENCES characters (id) ON DELETE SET NULL,
+    target_word_count INTEGER NOT NULL DEFAULT 3000
+                      CHECK (target_word_count > 0),
+    error_code        TEXT,
+    error_message     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    completed_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_writing_sessions_novel
+    ON writing_sessions (novel_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_writing_sessions_chapter
+    ON writing_sessions (novel_id, chapter_id);
+CREATE INDEX IF NOT EXISTS idx_writing_sessions_status
+    ON writing_sessions (novel_id, status);
+
+-- 结构化剧情计划：每次生成/重新生成都是一个新版本，is_current=1 为当前版本。
+-- 结构化字段以 JSON 文本保存（scenes/major_decisions 等），由服务层严格校验。
+CREATE TABLE IF NOT EXISTS writing_plans (
+    id                   TEXT PRIMARY KEY,
+    novel_id             TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    session_id           TEXT NOT NULL REFERENCES writing_sessions (id) ON DELETE CASCADE,
+    version              INTEGER NOT NULL DEFAULT 1,
+    is_current           INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0, 1)),
+    chapter_goal         TEXT NOT NULL DEFAULT '',
+    opening              TEXT NOT NULL DEFAULT '',
+    scenes               TEXT NOT NULL DEFAULT '[]',
+    character_actions    TEXT NOT NULL DEFAULT '[]',
+    conflicts            TEXT NOT NULL DEFAULT '[]',
+    plot_events          TEXT NOT NULL DEFAULT '[]',
+    foreshadowing        TEXT NOT NULL DEFAULT '[]',
+    ending               TEXT NOT NULL DEFAULT '',
+    estimated_word_count INTEGER NOT NULL DEFAULT 0,
+    major_decisions      TEXT NOT NULL DEFAULT '[]',
+    source_model         TEXT NOT NULL DEFAULT '',
+    source_task_id       TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_writing_plans_session
+    ON writing_plans (session_id, version DESC);
+
+-- 重大剧情决定：由计划派生，用户可选项/自定义/要求重新规划。
+-- resolved_at 非空表示已解决；必需决定未解决时禁止进入正文写作。
+CREATE TABLE IF NOT EXISTS writing_decisions (
+    id                TEXT PRIMARY KEY,
+    novel_id          TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    session_id        TEXT NOT NULL REFERENCES writing_sessions (id) ON DELETE CASCADE,
+    plan_id           TEXT NOT NULL REFERENCES writing_plans (id) ON DELETE CASCADE,
+    decision_key      TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    description       TEXT NOT NULL DEFAULT '',
+    context           TEXT NOT NULL DEFAULT '',
+    options           TEXT NOT NULL DEFAULT '[]',
+    recommended_option TEXT,
+    consequences      TEXT NOT NULL DEFAULT '',
+    is_required       INTEGER NOT NULL DEFAULT 0 CHECK (is_required IN (0, 1)),
+    selected_option   TEXT,
+    custom_answer     TEXT NOT NULL DEFAULT '',
+    resolved_at       TEXT,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (plan_id, decision_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_writing_decisions_session
+    ON writing_decisions (session_id, plan_id, sort_order);
+
+-- 章节草稿：一个会话一份草稿，段落记录在 writing_draft_segments。
+-- content 为当前完整草稿文本（由已完成段落拼接，用户编辑后以编辑内容为准）。
+CREATE TABLE IF NOT EXISTS writing_drafts (
+    id           TEXT PRIMARY KEY,
+    novel_id     TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    session_id   TEXT NOT NULL REFERENCES writing_sessions (id) ON DELETE CASCADE,
+    plan_id      TEXT REFERENCES writing_plans (id) ON DELETE SET NULL,
+    chapter_id   TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',
+    word_count   INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'drafting'
+                 CHECK (status IN ('drafting', 'ready', 'confirmed', 'discarded')),
+    edited       INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1)),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    confirmed_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_writing_drafts_session
+    ON writing_drafts (session_id);
+
+-- 草稿段落：sequence 保证顺序唯一，status 记录生成状态。
+CREATE TABLE IF NOT EXISTS writing_draft_segments (
+    id           TEXT PRIMARY KEY,
+    novel_id     TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    draft_id     TEXT NOT NULL REFERENCES writing_drafts (id) ON DELETE CASCADE,
+    scene_index  INTEGER NOT NULL DEFAULT 0,
+    sequence     INTEGER NOT NULL,
+    content      TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'generating', 'completed', 'failed')),
+    word_count   INTEGER NOT NULL DEFAULT 0,
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    truncated    INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    error_code   TEXT,
+    error_message TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    UNIQUE (draft_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_writing_segments_draft
+    ON writing_draft_segments (draft_id, sequence);
 
 -- 注意：引用 sequence 列的事件表索引不在 SCHEMA 中创建，
 -- 由 init_database 在 sequence 迁移完成后再建（见 CHAR_REL_EVENT_INDEXES_SQL）。
@@ -285,12 +568,73 @@ CREATE INDEX IF NOT EXISTS idx_char_rel_events_novel
     ON character_relation_events (novel_id, created_at DESC);
 """
 
+# 重建 character_relation_events 时使用的完整新表定义（与 SCHEMA 保持一致）。
+# 仅用于老库迁移：给 chapter_id 补上正式外键约束（删除章节时自动置空）。
+CHAR_REL_EVENT_REBUILD_SQL = """
+BEGIN;
+CREATE TABLE character_relation_events_new (
+    id             TEXT PRIMARY KEY,
+    novel_id       TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    relation_id    TEXT NOT NULL REFERENCES character_relations (id) ON DELETE CASCADE,
+    event_type     TEXT NOT NULL,
+    title          TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    previous_data  TEXT NOT NULL DEFAULT '{}',
+    new_data       TEXT NOT NULL DEFAULT '{}',
+    story_time     TEXT,
+    chapter_id     TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    sequence       INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+);
+INSERT INTO character_relation_events_new
+    (id, novel_id, relation_id, event_type, title, description,
+     previous_data, new_data, story_time, chapter_id, sequence, created_at)
+SELECT id, novel_id, relation_id, event_type, title, description,
+       previous_data, new_data, story_time, chapter_id, sequence, created_at
+  FROM character_relation_events;
+DROP TABLE character_relation_events;
+ALTER TABLE character_relation_events_new RENAME TO character_relation_events;
+COMMIT;
+"""
+
 # 任务标识：四种创作任务 + 全局默认模型
 TASK_KEYS = ("planner", "writer", "editor", "assistant")
 DEFAULT_TASK_KEY = "default"
 
+# AI 调用允许的任务类型（含全局默认）
+AI_TASK_TYPES = TASK_KEYS + (DEFAULT_TASK_KEY,)
+
+# AI 生成任务状态
+AI_TASK_STATUSES = ("pending", "running", "completed", "failed", "cancelled")
+
 # 小说创作状态
 NOVEL_STATUSES = ("planning", "writing", "paused", "completed")
+
+# 章节状态
+CHAPTER_STATUSES = ("planned", "drafting", "completed")
+
+# 创作会话状态（P4.1.2）
+WRITING_SESSION_STATUSES = (
+    "planning",
+    "awaiting_plan_approval",
+    "writing",
+    "paused_for_user",
+    "draft_ready",
+    "completed",
+    "cancelled",
+    "failed",
+)
+# 不可再继续的状态
+WRITING_SESSION_TERMINAL_STATUSES = ("completed", "cancelled", "failed")
+
+# 草稿状态
+WRITING_DRAFT_STATUSES = ("drafting", "ready", "confirmed", "discarded")
+
+# 草稿段落状态
+WRITING_SEGMENT_STATUSES = ("pending", "generating", "completed", "failed")
+
+# 剧情事件重要程度
+PLOT_EVENT_IMPORTANCE_LEVELS = ("low", "normal", "high", "critical")
 # 默认小说在 app_settings 中的键名
 DEFAULT_NOVEL_KEY = "default_novel_id"
 
@@ -507,6 +851,15 @@ def init_database() -> None:
     with get_connection() as conn:
         conn.executescript(SCHEMA)
 
+        # 迁移：P4.1.2 需要心跳字段区分「仍在执行的长任务」与「异常遗留任务」。
+        # 老库没有该列时补上（新库 CREATE TABLE 中已声明）。
+        ai_task_cols = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ai_generation_tasks)").fetchall()
+        ]
+        if "heartbeat_at" not in ai_task_cols:
+            conn.execute("ALTER TABLE ai_generation_tasks ADD COLUMN heartbeat_at TEXT")
+
         # 迁移：对升级上来的老库，如果已有 character_relation_events 但缺少 sequence 列则补上。
         # 新建库的 CREATE TABLE 里已声明该列，不会重复执行。
         cols = [
@@ -519,7 +872,22 @@ def init_database() -> None:
             conn.execute(
                 "ALTER TABLE character_relation_events ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0"
             )
-        # sequence 列就绪后再创建引用它的事件表索引（幂等）
+
+        # 迁移：老库的 chapter_id 只是普通文本列。P3.5 需要给它补上正式的
+        # chapters 外键（删除章节时自动置空），同样按 SQLite 官方流程重建。
+        event_fks = conn.execute(
+            "PRAGMA foreign_key_list(character_relation_events)"
+        ).fetchall()
+        has_chapter_fk = any(fk["table"] == "chapters" for fk in event_fks)
+        if not has_chapter_fk:
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                conn.executescript(CHAR_REL_EVENT_REBUILD_SQL)
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+
+        # sequence 列与 chapter 外键就绪后再创建事件表索引（幂等）
         conn.executescript(CHAR_REL_EVENT_INDEXES_SQL)
 
         # 迁移：老库的 character_relations 使用单列外键，无法从数据库层面保证

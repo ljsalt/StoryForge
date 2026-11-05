@@ -145,6 +145,12 @@ class OpenAICompatibleAdapter(BaseAdapter):
         }
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
+        # 额外参数：允许服务商特定选项，但禁止覆盖核心字段
+        if request.extra:
+            for key, value in request.extra.items():
+                if key in ("model", "messages", "stream"):
+                    continue
+                payload[key] = value
 
         started = time.perf_counter()
         response = await self._send("POST", "/chat/completions", payload)
@@ -159,14 +165,23 @@ class OpenAICompatibleAdapter(BaseAdapter):
             raise AdapterError(ERROR_BAD_REQUEST, "服务商返回内容不是有效 JSON")
 
         choices = body.get("choices") if isinstance(body, dict) else None
-        if not choices:
+        if not choices or not isinstance(choices[0], dict):
             raise AdapterError(ERROR_SERVER, "服务商响应中缺少 choices 字段")
-        message = choices[0].get("message") or {}
-        content = message.get("content") or ""
+        first = choices[0]
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise AdapterError(ERROR_SERVER, "服务商响应中缺少 message 字段")
+        # reasoning_content（DeepSeek）与 content 必须区分读取：
+        # 思维链不是正文，不能混用
+        content = message.get("content")
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        finish_reason = first.get("finish_reason")
 
         return CompletionResult(
-            content=str(content),
+            content=str(content) if content else "",
+            reasoning=str(reasoning) if reasoning else "",
+            finish_reason=str(finish_reason) if finish_reason else None,
             model=str(body.get("model") or payload["model"]),
-            usage=body.get("usage") or {},
+            usage=body.get("usage") if isinstance(body.get("usage"), dict) else {},
             latency_ms=latency_ms,
         )

@@ -11,6 +11,8 @@ export interface CharacterRelationEvent {
   new_data: Record<string, unknown>
   story_time: string | null
   chapter_id: string | null
+  chapter_title?: string | null
+  chapter_number?: number | null
   sequence: number
   created_at: string
 }
@@ -54,6 +56,7 @@ export interface CharacterRelationPayload {
   attributes?: Record<string, CharacterAttributeValue>
   start_time?: string | null
   story_time?: string | null
+  chapter_id?: string | null
 }
 
 export interface CharacterRelationUpdatePayload {
@@ -62,6 +65,7 @@ export interface CharacterRelationUpdatePayload {
   strength?: number | null
   attributes?: Record<string, CharacterAttributeValue>
   start_time?: string | null
+  chapter_id?: string | null
 }
 
 export interface CharacterRelationQuery {

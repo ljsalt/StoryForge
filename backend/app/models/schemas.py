@@ -224,8 +224,8 @@ class NovelUpdate(BaseModel):
 
 
 class NovelStats(BaseModel):
-    # 章节、人物等数据表将在后续阶段创建，当前统一返回 0
     chapter_count: int = 0
+    completed_chapter_count: int = 0
     character_count: int = 0
     character_relation_count: int = 0
     word_count: int = 0
@@ -919,13 +919,21 @@ class CharacterRelationCreate(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
     start_time: str | None = Field(default=None, max_length=64)
     story_time: str | None = Field(default=None, max_length=64)
+    chapter_id: str | None = Field(default=None, max_length=64, description="关联章节")
 
-    @field_validator("relation_type", "description", "start_time", "story_time")
+    @field_validator(
+        "relation_type", "description", "start_time", "story_time", "chapter_id"
+    )
     @classmethod
     def _strip_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return value.strip()
+
+    @field_validator("chapter_id")
+    @classmethod
+    def _chapter_empty_to_none(cls, value: str | None) -> str | None:
+        return value or None
 
     @field_validator("relation_type")
     @classmethod
@@ -942,8 +950,9 @@ class CharacterRelationUpdate(BaseModel):
     attributes: dict[str, Any] | None = None
     start_time: str | None = Field(default=None, max_length=64)
     story_time: str | None = Field(default=None, max_length=64)
+    chapter_id: str | None = Field(default=None, max_length=64, description="事件关联章节")
 
-    @field_validator("relation_type", "description", "start_time", "story_time")
+    @field_validator("relation_type", "description", "start_time", "story_time", "chapter_id")
     @classmethod
     def _strip_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
@@ -997,7 +1006,16 @@ class CharacterRelationEventOut(BaseModel):
     new_data: dict[str, Any]
     story_time: str | None
     chapter_id: str | None
+    chapter_title: str | None = None
+    chapter_number: int | None = None
+    sequence: int = 0
     created_at: str
+
+
+class ChapterRelationEventOut(CharacterRelationEventOut):
+    """章节详情里展示的关系变化事件，附带关系两端人物姓名。"""
+    source_name: str
+    target_name: str
 
 
 class CharacterCharacterRelationOut(BaseModel):
@@ -1009,3 +1027,626 @@ class CharacterCharacterRelationsOut(BaseModel):
     character_id: str
     outgoing: list[CharacterCharacterRelationOut]
     incoming: list[CharacterCharacterRelationOut]
+
+
+# ----------------------------- 章节 -----------------------------
+ChapterStatus = Literal["planned", "drafting", "completed"]
+_CHAR_TITLE_MAX = 200
+_CHAR_SUMMARY_MAX = 5000
+_CHAPTER_CONTENT_MAX = 5_000_000
+
+
+class ChapterCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=_CHAR_TITLE_MAX, description="章节标题")
+    chapter_number: int | None = Field(default=None, ge=1, le=1_000_000)
+    volume_number: int | None = Field(default=None, ge=1, le=100_000)
+    content: str = Field(default="", max_length=_CHAPTER_CONTENT_MAX, description="章节正文")
+    summary: str = Field(default="", max_length=_CHAR_SUMMARY_MAX, description="章节摘要")
+    status: ChapterStatus = "planned"
+
+    @field_validator("title", "content", "summary")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("章节标题不能为空")
+        return value
+
+
+class ChapterUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=_CHAR_TITLE_MAX)
+    chapter_number: int | None = Field(default=None, ge=1, le=1_000_000)
+    volume_number: int | None = Field(default=None, ge=1, le=100_000)
+    content: str | None = Field(default=None, max_length=_CHAPTER_CONTENT_MAX)
+    summary: str | None = Field(default=None, max_length=_CHAR_SUMMARY_MAX)
+    status: ChapterStatus | None = None
+
+    @field_validator("title", "content", "summary")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value:
+            raise ValueError("章节标题不能为空")
+        return value
+
+
+class ChapterReorder(BaseModel):
+    ordered_ids: list[str] = Field(min_length=1, max_length=5000, description="按新顺序排列的章节 ID")
+
+
+class ChapterOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_number: int
+    volume_number: int | None
+    title: str
+    content: str
+    summary: str
+    status: ChapterStatus
+    word_count: int
+    sort_order: int
+    created_at: str
+    updated_at: str
+
+
+class ChapterSummaryOut(BaseModel):
+    """目录列表用的摘要，不返回正文，避免长正文拖慢列表加载。"""
+    id: str
+    novel_id: str
+    chapter_number: int
+    volume_number: int | None
+    title: str
+    summary: str
+    status: ChapterStatus
+    word_count: int
+    sort_order: int
+    created_at: str
+    updated_at: str
+
+
+class ChapterStats(BaseModel):
+    chapter_count: int = 0
+    completed_chapter_count: int = 0
+    drafting_chapter_count: int = 0
+    planned_chapter_count: int = 0
+    total_word_count: int = 0
+
+
+# ----------------------------- 剧情事件 -----------------------------
+PlotImportance = Literal["low", "normal", "high", "critical"]
+_PLOT_TITLE_MAX = 200
+_PLOT_DESCRIPTION_MAX = 20000
+_PLOT_TYPE_MAX = 80
+_PLOT_TIME_MAX = 100
+_PLOT_LOCATION_NAME_MAX = 200
+_PLOT_ROLE_MAX = 100
+_PLOT_PARTICIPANT_DESC_MAX = 1000
+_PLOT_PARTICIPANTS_MAX = 50
+
+
+class PlotEventParticipantInput(BaseModel):
+    character_id: str = Field(min_length=1, max_length=64)
+    participant_role: str = Field(default="", max_length=_PLOT_ROLE_MAX)
+    description: str = Field(default="", max_length=_PLOT_PARTICIPANT_DESC_MAX)
+
+    @field_validator("character_id", "participant_role", "description")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class PlotEventCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=_PLOT_TITLE_MAX)
+    description: str = Field(default="", max_length=_PLOT_DESCRIPTION_MAX)
+    event_type: str = Field(default="", max_length=_PLOT_TYPE_MAX, description="事件类型，支持自定义")
+    story_time: str | None = Field(default=None, max_length=_PLOT_TIME_MAX, description="故事世界内时间")
+    chapter_id: str | None = Field(default=None, max_length=64)
+    location_id: str | None = Field(default=None, max_length=64)
+    location_name: str = Field(default="", max_length=_PLOT_LOCATION_NAME_MAX)
+    importance: PlotImportance = "normal"
+    sequence: int = Field(default=0, ge=0, le=1_000_000)
+    participants: list[PlotEventParticipantInput] = Field(default_factory=list)
+
+    @field_validator("title", "description", "event_type", "story_time", "location_name")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("事件标题不能为空")
+        return value
+
+    @field_validator("chapter_id", "location_id")
+    @classmethod
+    def _empty_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("participants")
+    @classmethod
+    def _validate_participants(
+        cls, value: list[PlotEventParticipantInput]
+    ) -> list[PlotEventParticipantInput]:
+        if len(value) > _PLOT_PARTICIPANTS_MAX:
+            raise ValueError(f"参与人物最多 {_PLOT_PARTICIPANTS_MAX} 位")
+        return value
+
+
+class PlotEventUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=_PLOT_TITLE_MAX)
+    description: str | None = Field(default=None, max_length=_PLOT_DESCRIPTION_MAX)
+    event_type: str | None = Field(default=None, max_length=_PLOT_TYPE_MAX)
+    story_time: str | None = Field(default=None, max_length=_PLOT_TIME_MAX)
+    chapter_id: str | None = Field(default=None, max_length=64)
+    location_id: str | None = Field(default=None, max_length=64)
+    location_name: str | None = Field(default=None, max_length=_PLOT_LOCATION_NAME_MAX)
+    importance: PlotImportance | None = None
+    sequence: int | None = Field(default=None, ge=0, le=1_000_000)
+    participants: list[PlotEventParticipantInput] | None = None
+
+    @field_validator("title", "description", "event_type", "story_time", "location_name")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value:
+            raise ValueError("事件标题不能为空")
+        return value
+
+    @field_validator("chapter_id", "location_id")
+    @classmethod
+    def _empty_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("participants")
+    @classmethod
+    def _validate_participants(
+        cls, value: list[PlotEventParticipantInput] | None
+    ) -> list[PlotEventParticipantInput] | None:
+        if value is not None and len(value) > _PLOT_PARTICIPANTS_MAX:
+            raise ValueError(f"参与人物最多 {_PLOT_PARTICIPANTS_MAX} 位")
+        return value
+
+
+class PlotEventParticipantOut(BaseModel):
+    id: str
+    character_id: str
+    character_name: str
+    participant_role: str
+    description: str
+
+
+class PlotEventOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_id: str | None
+    chapter_title: str | None = None
+    chapter_number: int | None = None
+    title: str
+    description: str
+    event_type: str
+    story_time: str | None
+    location_id: str | None
+    location_name: str
+    importance: PlotImportance
+    sequence: int
+    participants: list[PlotEventParticipantOut] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class PlotTimelineOut(BaseModel):
+    """timed 为有故事时间的事件（按故事时间排序），untimed 为未填写故事时间的事件。"""
+    timed: list[PlotEventOut] = Field(default_factory=list)
+    untimed: list[PlotEventOut] = Field(default_factory=list)
+
+# ----------------------------- AI 基础设施 -----------------------------
+AiTaskType = Literal["planner", "writer", "editor", "assistant", "default"]
+AiTaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+ContextPov = Literal["author", "narrative", "character"]
+
+
+class AiGenerateRequest(BaseModel):
+    """AI 调用测试请求。本阶段仅用于基础设施测试，不代表正式章节生成。"""
+    novel_id: str = Field(min_length=1, max_length=64)
+    task_type: AiTaskType = "default"
+    model_id: str | None = Field(default=None, max_length=64, description="显式指定模型行 ID")
+    system_prompt: str = Field(default="", max_length=20000)
+    user_prompt: str = Field(min_length=1, max_length=50000)
+    context: str = Field(default="", max_length=200000)
+    temperature: float = Field(default=0.7, ge=0, le=2)
+    max_tokens: int = Field(default=2048, ge=1, le=128000)
+    timeout: float | None = Field(default=None, ge=1, le=600)
+    include_reasoning: bool = False
+    extra_params: dict[str, Any] | None = None
+
+    @field_validator("novel_id", "model_id")
+    @classmethod
+    def _strip_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("user_prompt")
+    @classmethod
+    def _prompt_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("用户提示词不能为空")
+        return value
+
+    @field_validator("extra_params")
+    @classmethod
+    def _check_extra(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and len(value) > 20:
+            raise ValueError("额外模型参数最多 20 个")
+        return value
+
+
+class AiGenerateResult(BaseModel):
+    """统一 AI 调用响应结构；不包含任何密钥信息。"""
+    success: bool
+    content: str = ""
+    reasoning: str = ""
+    model: str = ""
+    provider: str = ""
+    task_type: str = ""
+    finish_reason: str | None = None
+    truncated: bool = False
+    usage: dict[str, Any] = Field(default_factory=dict)
+    error_code: str | None = None
+    error_message: str | None = None
+    latency_ms: int = 0
+    resolved_from: str = ""
+    task_id: str | None = None
+    test_only: bool = True
+
+
+class AiRoutePreviewOut(BaseModel):
+    task_type: str
+    resolved: bool
+    model_id: str | None = None
+    model_identifier: str | None = None
+    provider_id: str | None = None
+    provider_type: str | None = None
+    resolved_from: str | None = None
+    message: str = ""
+
+
+class ContextPreviewRequest(BaseModel):
+    novel_id: str = Field(min_length=1, max_length=64)
+    task_type: AiTaskType = "writer"
+    chapter_id: str | None = Field(default=None, max_length=64)
+    character_ids: list[str] | None = Field(default=None, max_length=50)
+    token_budget: int | None = Field(default=None, ge=200, le=200000)
+    pov: ContextPov = "author"
+    user_requirement: str = Field(default="", max_length=20000)
+
+    @field_validator("novel_id", "chapter_id")
+    @classmethod
+    def _strip_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class ContextSectionOut(BaseModel):
+    key: str
+    title: str
+    content: str
+    tokens: int
+    estimated: bool = True
+    included: bool = True
+    item_count: int = 0
+    priority: int = 0
+
+
+class ContextPreviewOut(BaseModel):
+    context_text: str
+    sections: list[ContextSectionOut] = Field(default_factory=list)
+    estimated_tokens: int
+    token_budget: int
+    omitted_sections: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PromptTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    task_type: AiTaskType
+    description: str = Field(default="", max_length=500)
+    system_prompt: str = Field(default="", max_length=20000)
+    user_prompt_template: str = Field(default="", max_length=50000)
+    is_active: bool = True
+
+    @field_validator("name", "description")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("模板名称不能为空")
+        return value
+
+
+class PromptTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    task_type: AiTaskType | None = None
+    description: str | None = Field(default=None, max_length=500)
+    system_prompt: str | None = Field(default=None, max_length=20000)
+    user_prompt_template: str | None = Field(default=None, max_length=50000)
+    is_active: bool | None = None
+
+    @field_validator("name", "description")
+    @classmethod
+    def _strip_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class PromptTemplateOut(BaseModel):
+    id: str
+    name: str
+    task_type: str
+    description: str
+    system_prompt: str
+    user_prompt_template: str
+    version: int
+    is_active: bool
+    variables: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class PromptTemplateVersionOut(BaseModel):
+    id: str
+    template_id: str
+    version: int
+    name: str
+    task_type: str
+    description: str
+    system_prompt: str
+    user_prompt_template: str
+    created_at: str
+
+
+class PromptTemplateRenderRequest(BaseModel):
+    template_id: str = Field(min_length=1, max_length=64)
+    variables: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("variables")
+    @classmethod
+    def _check_variables(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 50:
+            raise ValueError("模板变量最多 50 个")
+        return value
+
+
+class PromptTemplateRenderOut(BaseModel):
+    system_prompt: str
+    user_prompt: str
+    template_id: str
+    version: int
+    task_type: str
+
+
+class AiTaskOut(BaseModel):
+    id: str
+    novel_id: str
+    task_type: str
+    model_id: str | None
+    model_identifier: str = ""
+    provider_id: str | None
+    status: AiTaskStatus
+    input_summary: str = ""
+    output_summary: str = ""
+    error_code: str | None = None
+    error_message: str | None = None
+    prompt_template_id: str | None = None
+    template_version: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_tokens: int | None = None
+    truncated: bool = False
+    latency_ms: int | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str
+
+
+# ----------------------------- P4.1.2 单章节创作工作流 -----------------------------
+
+WritingSessionStatus = Literal[
+    "planning",
+    "awaiting_plan_approval",
+    "writing",
+    "paused_for_user",
+    "draft_ready",
+    "completed",
+    "cancelled",
+    "failed",
+]
+
+
+class WritingSessionCreate(BaseModel):
+    """从已有章节或新章节草稿启动一次创作会话。"""
+
+    title: str = Field(default="", max_length=200)
+    chapter_id: str | None = Field(default=None, max_length=64)
+    user_instruction: str = Field(default="", max_length=5000)
+    pov_character_id: str | None = Field(default=None, max_length=64)
+    target_word_count: int = Field(default=3000, ge=500, le=10000)
+
+    @field_validator("title")
+    @classmethod
+    def _strip_title(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("chapter_id", "pov_character_id")
+    @classmethod
+    def _strip_optional_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class WritingSessionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    user_instruction: str | None = Field(default=None, max_length=5000)
+    pov_character_id: str | None = Field(default=None, max_length=64)
+    target_word_count: int | None = Field(default=None, ge=500, le=10000)
+
+
+class WritingSceneInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    location: str = Field(default="", max_length=200)
+    characters: list[str] = Field(default_factory=list, max_length=30)
+    purpose: str = Field(min_length=1, max_length=2000)
+    actions: str = Field(min_length=1, max_length=4000)
+    conflict: str = Field(min_length=1, max_length=2000)
+    result: str = Field(min_length=1, max_length=2000)
+    transition: str = Field(min_length=1, max_length=2000)
+
+
+class WritingPlotEventInput(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=2000)
+
+
+class WritingDecisionInput(BaseModel):
+    decision_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    context: str = Field(default="", max_length=2000)
+    options: list[str] = Field(min_length=1, max_length=10)
+    recommended_option: str | None = Field(default=None, max_length=200)
+    consequences: str = Field(default="", max_length=2000)
+    is_required: bool = False
+
+
+class WritingPlanUpdate(BaseModel):
+    """用户手工修改计划时提交的完整结构（必须通过同一套结构校验）。"""
+
+    chapter_goal: str = Field(min_length=1, max_length=2000)
+    opening: str = Field(min_length=1, max_length=4000)
+    scenes: list[WritingSceneInput] = Field(min_length=1, max_length=30)
+    character_actions: list[str] = Field(default_factory=list, max_length=30)
+    conflicts: list[str] = Field(default_factory=list, max_length=30)
+    plot_events: list[WritingPlotEventInput] = Field(default_factory=list, max_length=30)
+    foreshadowing: list[str] = Field(default_factory=list, max_length=30)
+    ending: str = Field(min_length=1, max_length=4000)
+    estimated_word_count: int = Field(ge=1, le=50000)
+    major_decisions: list[WritingDecisionInput] = Field(default_factory=list, max_length=20)
+
+
+class WritingPlanGenerateRequest(BaseModel):
+    extra_instruction: str = Field(default="", max_length=5000)
+    temperature: float = Field(default=0.6, ge=0, le=2)
+    max_tokens: int = Field(default=4096, ge=256, le=32768)
+
+
+class WritingDecisionResolveRequest(BaseModel):
+    selected_option: str = Field(default="", max_length=200)
+    custom_answer: str = Field(default="", max_length=2000)
+
+
+class WritingPlanApproveRequest(BaseModel):
+    draft_title: str = Field(default="", max_length=200)
+
+
+class WritingSegmentGenerateRequest(BaseModel):
+    sequence: int | None = Field(default=None, ge=1, le=100)
+    extra_instruction: str = Field(default="", max_length=5000)
+    temperature: float = Field(default=0.8, ge=0, le=2)
+    max_tokens: int = Field(default=4096, ge=256, le=32768)
+
+
+class WritingDraftUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, max_length=200000)
+
+
+class WritingConfirmRequest(BaseModel):
+    """确认写入正式章节：默认另存为新章节，覆盖原章节必须显式指定。"""
+
+    mode: Literal["new_chapter", "replace_existing"] = "new_chapter"
+    chapter_title: str = Field(default="", max_length=200)
+    summary: str = Field(default="", max_length=500)
+
+
+class WritingSessionOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_id: str | None = None
+    title: str
+    status: WritingSessionStatus
+    task_type: str = "writer"
+    user_instruction: str = ""
+    pov_character_id: str | None = None
+    target_word_count: int = 3000
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+    plan_version: int | None = None
+    draft_status: str | None = None
+    draft_word_count: int = 0
+
+
+class WritingSegmentOut(BaseModel):
+    id: str
+    draft_id: str
+    scene_index: int
+    sequence: int
+    content: str = ""
+    status: Literal["pending", "generating", "completed", "failed"]
+    word_count: int = 0
+    attempt: int = 1
+    truncated: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class WritingDraftOut(BaseModel):
+    id: str
+    novel_id: str
+    session_id: str
+    plan_id: str | None = None
+    chapter_id: str | None = None
+    title: str
+    content: str = ""
+    word_count: int = 0
+    status: Literal["drafting", "ready", "confirmed", "discarded"]
+    edited: bool = False
+    created_at: str
+    updated_at: str
+    confirmed_at: str | None = None
+    segments: list[WritingSegmentOut] = Field(default_factory=list)
+    progress: dict[str, Any] = Field(default_factory=dict)

@@ -20,6 +20,7 @@ export interface Novel {
 
 export interface NovelStats {
   chapter_count: number
+  completed_chapter_count: number
   character_count: number
   character_relation_count: number
   word_count: number

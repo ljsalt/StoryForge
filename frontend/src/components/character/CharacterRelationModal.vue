@@ -17,6 +17,7 @@ import {
 import { extractError } from '../../api/error'
 import { useCharacterStore } from '../../stores/character'
 import { useCharacterRelationStore } from '../../stores/characterRelation'
+import { useChapterStore } from '../../stores/chapter'
 import { DEFAULT_CHAR_RELATION_TYPES } from '../../api/characterRelation'
 import type { CharacterRelation, CharacterRelationPayload } from '../../api/characterRelation'
 
@@ -30,6 +31,7 @@ const emit = defineEmits<{ 'update:show': [v: boolean]; saved: [] }>()
 
 const characterStore = useCharacterStore()
 const relationStore = useCharacterRelationStore()
+const chapterStore = useChapterStore()
 const message = useMessage()
 
 const isEdit = computed(() => Boolean(props.relation))
@@ -39,6 +41,7 @@ const targetId = ref('')
 const relationType = ref('')
 const description = ref('')
 const strength = ref<number | null>(null)
+const chapterId = ref<string | null>(null)
 const bidirectional = ref(false)
 const saving = ref(false)
 
@@ -54,10 +57,28 @@ const typeOptions = computed(() =>
   DEFAULT_CHAR_RELATION_TYPES.map((t) => ({ label: t, value: t })),
 )
 
+const chapterOptions = computed(() =>
+  chapterStore.chapters.map((c) => ({
+    label: `第 ${c.chapter_number} 章 ${c.title}`,
+    value: c.id,
+  })),
+)
+
+async function ensureChapters(novelId: string) {
+  if (!novelId || chapterStore.novelId === novelId) return
+  try {
+    await chapterStore.load(novelId)
+  } catch {
+    // 章节列表加载失败不影响关系保存
+  }
+}
+
 watch(
   () => [props.show, props.relation, props.defaultSourceId, props.defaultTargetId] as const,
   ([show]) => {
     if (!show) return
+    chapterId.value = null
+    ensureChapters(props.relation?.novel_id || characterStore.novelId)
     if (props.relation) {
       sourceId.value = props.relation.source_character_id
       targetId.value = props.relation.target_character_id
@@ -105,6 +126,7 @@ async function submit() {
     description: description.value.trim(),
     strength: strength.value,
     attributes: {},
+    chapter_id: chapterId.value || null,
   }
 
   saving.value = true
@@ -176,6 +198,16 @@ async function submit() {
           maxlength="2000"
           show-count
           placeholder="例如：顾长生收林远为徒，传授御剑术。"
+        />
+      </n-form-item>
+
+      <n-form-item label="关联章节（可选，记录到本次关系变化事件）">
+        <n-select
+          v-model:value="chapterId"
+          :options="chapterOptions"
+          clearable
+          filterable
+          placeholder="选择本章中发生的这次关系变化"
         />
       </n-form-item>
 

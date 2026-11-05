@@ -104,9 +104,15 @@ def update_relation(
     "/novels/{novel_id}/character-relations/{relation_id}/end",
     response_model=CharacterRelationOut,
 )
-def end_relation(novel_id: str, relation_id: str) -> dict:
+def end_relation(
+    novel_id: str,
+    relation_id: str,
+    chapter_id: str | None = Query(default=None, max_length=64),
+) -> dict:
     try:
-        return service.end_relation(novel_id, relation_id)
+        return service.end_relation(
+            novel_id, relation_id, event_info={"chapter_id": chapter_id}
+        )
     except ServiceError as exc:
         raise _err(exc) from exc
 
@@ -115,9 +121,15 @@ def end_relation(novel_id: str, relation_id: str) -> dict:
     "/novels/{novel_id}/character-relations/{relation_id}/restore",
     response_model=CharacterRelationOut,
 )
-def restore_relation(novel_id: str, relation_id: str) -> dict:
+def restore_relation(
+    novel_id: str,
+    relation_id: str,
+    chapter_id: str | None = Query(default=None, max_length=64),
+) -> dict:
     try:
-        return service.restore_relation(novel_id, relation_id)
+        return service.restore_relation(
+            novel_id, relation_id, event_info={"chapter_id": chapter_id}
+        )
     except ServiceError as exc:
         raise _err(exc) from exc
 

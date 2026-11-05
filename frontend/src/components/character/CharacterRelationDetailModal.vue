@@ -164,6 +164,9 @@ async function doRestore() {
               <div class="ev-meta">
                 {{ formatDateTime(ev.created_at) }}
                 <span v-if="ev.story_time" class="story-time"> · 小说时间 {{ ev.story_time }}</span>
+                <span v-if="ev.chapter_title" class="story-time">
+                  · 关联章节 第 {{ ev.chapter_number }} 章 {{ ev.chapter_title }}
+                </span>
               </div>
               <div v-if="ev.description" class="ev-desc">{{ ev.description }}</div>
               <div v-if="ev.event_type !== 'created'" class="ev-diff">

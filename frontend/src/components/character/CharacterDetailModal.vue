@@ -16,8 +16,15 @@ import {
   useDialog,
   useMessage,
 } from 'naive-ui'
+import { useRouter } from 'vue-router'
 import { extractError } from '../../api/error'
 import type { Character, CharacterSecret } from '../../api/character'
+import {
+  listCharacterPlotEvents,
+  PLOT_IMPORTANCE_LABELS,
+  PLOT_IMPORTANCE_TYPES,
+  type PlotEvent,
+} from '../../api/plotEvent'
 import { DEFAULT_LIFE_STATUSES, DEFAULT_REVEAL_STATUSES, DEFAULT_SECRECY_LEVELS } from '../../api/character'
 import type { CharacterRelation } from '../../api/characterRelation'
 import { useCharacterStore } from '../../stores/character'
@@ -26,6 +33,7 @@ import CharacterStateModal from './CharacterStateModal.vue'
 import CharacterSecretModal from './CharacterSecretModal.vue'
 import CharacterRelationModal from './CharacterRelationModal.vue'
 import CharacterRelationDetailModal from './CharacterRelationDetailModal.vue'
+import PlotEventDetailModal from '../plot/PlotEventDetailModal.vue'
 
 const props = defineProps<{ show: boolean; character: Character | null }>()
 const emit = defineEmits<{
@@ -48,6 +56,11 @@ const showSecretModal = ref(false)
 const editingSecret = ref<CharacterSecret | null>(null)
 const expandedSecrets = ref<Record<string, boolean>>({})
 const loadingRelations = ref(false)
+const router = useRouter()
+const plotEvents = ref<PlotEvent[]>([])
+const loadingPlotEvents = ref(false)
+const showPlotEventDetail = ref(false)
+const viewingPlotEvent = ref<PlotEvent | null>(null)
 const showRelModal = ref(false)
 const showRelDetail = ref(false)
 const editingRel = ref<import('../../api/characterRelation').CharacterRelation | null>(null)
@@ -75,6 +88,35 @@ async function loadSecrets() {
   }
 }
 
+async function loadPlotEvents() {
+  if (!props.character) return
+  loadingPlotEvents.value = true
+  try {
+    const { data } = await listCharacterPlotEvents(props.character.novel_id, props.character.id)
+    plotEvents.value = data
+  } catch (error) {
+    message.error(extractError(error, '加载人物剧情事件失败'))
+  } finally {
+    loadingPlotEvents.value = false
+  }
+}
+
+function roleIn(event: PlotEvent): string {
+  return (
+    event.participants.find((p) => p.character_id === props.character?.id)?.participant_role || ''
+  )
+}
+
+function openPlotEvent(event: PlotEvent) {
+  viewingPlotEvent.value = event
+  showPlotEventDetail.value = true
+}
+
+function openEventChapter(chapterId: string) {
+  if (!props.character) return
+  router.push({ path: `/novels/${props.character.novel_id}/chapters`, query: { open: chapterId } })
+}
+
 async function loadRelations() {
   if (!props.character) return
   loadingRelations.value = true
@@ -94,6 +136,7 @@ watch(
       expandedSecrets.value = {}
       loadSecrets()
       loadRelations()
+      loadPlotEvents()
     }
   },
 )
@@ -348,6 +391,51 @@ async function openRelatedCharacter(id: string) {
           </n-spin>
         </n-tab-pane>
 
+        <n-tab-pane name="plot-events" tab="剧情事件">
+          <div class="section-head">
+            <div class="hint">
+              该人物参与的全部剧情事件（故事事实）。点击事件可查看详情、关联章节与其他参与者。
+            </div>
+          </div>
+          <n-spin :show="loadingPlotEvents">
+            <n-empty
+              v-if="!plotEvents.length"
+              description="该人物还没有参与剧情事件"
+              class="empty-mini"
+            />
+            <div v-else class="plot-event-list">
+              <div
+                v-for="event in plotEvents"
+                :key="event.id"
+                class="plot-event-item"
+                @click="openPlotEvent(event)"
+              >
+                <div class="plot-event-head">
+                  <span class="plot-event-title">{{ event.title }}</span>
+                  <n-tag
+                    size="tiny"
+                    round
+                    :bordered="false"
+                    :type="PLOT_IMPORTANCE_TYPES[event.importance]"
+                  >
+                    {{ PLOT_IMPORTANCE_LABELS[event.importance] }}
+                  </n-tag>
+                  <n-tag v-if="roleIn(event)" size="tiny" round :bordered="false" type="info">
+                    {{ roleIn(event) }}
+                  </n-tag>
+                </div>
+                <div class="plot-event-meta">
+                  <span v-if="event.chapter_title">
+                    第 {{ event.chapter_number }} 章 · {{ event.chapter_title }}
+                  </span>
+                  <span v-else>未关联章节</span>
+                  <span v-if="event.story_time">故事时间：{{ event.story_time }}</span>
+                </div>
+              </div>
+            </div>
+          </n-spin>
+        </n-tab-pane>
+
         <n-tab-pane name="relations" tab="人物关系">
           <div class="section-head">
             <div class="hint">
@@ -434,6 +522,12 @@ async function openRelatedCharacter(id: string) {
       :default-source-id="character?.id"
       @saved="onRelationSaved"
     />
+    <PlotEventDetailModal
+      v-model:show="showPlotEventDetail"
+      :novel-id="character?.novel_id || ''"
+      :event="viewingPlotEvent"
+      @open-chapter="openEventChapter"
+    />
     <CharacterRelationDetailModal
       v-model:show="showRelDetail"
       :relation="viewingRel"
@@ -502,4 +596,18 @@ async function openRelatedCharacter(id: string) {
 .rel-item.ended { opacity: 0.6; }
 .rel-dir { width: 18px; text-align: center; color: rgba(255,255,255,0.5); font-weight: 600; }
 .rel-name { flex: 1; font-weight: 500; color: #fff; }
+.plot-event-list { display: flex; flex-direction: column; gap: 6px; }
+.plot-event-item {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  cursor: pointer; transition: background 0.15s;
+}
+.plot-event-item:hover { background: rgba(255,255,255,0.06); }
+.plot-event-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plot-event-title { font-weight: 500; color: #fff; }
+.plot-event-meta {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  margin-top: 4px; font-size: 12px; color: rgba(255,255,255,0.45);
+}
 </style>

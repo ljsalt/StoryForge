@@ -168,6 +168,20 @@ def _insert_event(
     )
 
 
+def _validate_chapter(
+    conn: sqlite3.Connection, novel_id: str, chapter_id: str | None
+) -> None:
+    """章节可选择性关联；一旦提供就必须属于当前小说，否则 404。"""
+    if not chapter_id:
+        return
+    row = conn.execute(
+        "SELECT id FROM chapters WHERE id = ? AND novel_id = ?",
+        (chapter_id, novel_id),
+    ).fetchone()
+    if row is None:
+        raise ServiceError(404, "章节不存在")
+
+
 def _check_active_duplicate(
     conn: sqlite3.Connection,
     novel_id: str,
@@ -294,6 +308,7 @@ def create_relation(novel_id: str, payload: dict) -> dict:
         # 两端都必须属于当前小说
         _character_brief(conn, novel_id, source_id, "发起人物")
         _character_brief(conn, novel_id, target_id, "目标人物")
+        _validate_chapter(conn, novel_id, payload.get("chapter_id"))
         _check_active_duplicate(conn, novel_id, source_id, target_id, relation_type)
 
         relation_id = uuid4().hex
@@ -331,6 +346,7 @@ def create_relation(novel_id: str, payload: dict) -> dict:
             description=payload.get("description", "") or "",
             new_data=new_snapshot,
             story_time=payload.get("story_time"),
+            chapter_id=payload.get("chapter_id"),
         )
     return get_relation(novel_id, relation_id)
 
@@ -362,6 +378,10 @@ def update_relation(
             updates["strength"] = fields.get("strength")
         if fields.get("attributes") is not None:
             updates["attributes"] = _dump_json(fields["attributes"], "自定义属性")
+
+        # 即使本次只提交 chapter_id，也要先校验章节归属再返回
+        if fields.get("chapter_id") is not None:
+            _validate_chapter(conn, novel_id, fields["chapter_id"])
 
         if not updates:
             return get_relation(novel_id, relation_id)
@@ -398,7 +418,9 @@ def update_relation(
         )
 
         after = _relation_snapshot(conn, relation_id)
-        info = event_info or {}
+        info = dict(event_info or {})
+        if fields.get("chapter_id") is not None:
+            info["chapter_id"] = fields["chapter_id"]
         _insert_event(
             conn,
             novel_id=novel_id,
@@ -435,7 +457,8 @@ def end_relation(
         )
 
         after = _relation_snapshot(conn, relation_id)
-        info = event_info or {}
+        info = dict(event_info or {})
+        _validate_chapter(conn, novel_id, info.get("chapter_id"))
         _insert_event(
             conn,
             novel_id=novel_id,
@@ -493,7 +516,8 @@ def restore_relation(
         )
 
         after = _relation_snapshot(conn, relation_id)
-        info = event_info or {}
+        info = dict(event_info or {})
+        _validate_chapter(conn, novel_id, info.get("chapter_id"))
         _insert_event(
             conn,
             novel_id=novel_id,
@@ -516,28 +540,70 @@ def list_events(novel_id: str, relation_id: str) -> list[dict]:
         _relation_row(conn, novel_id, relation_id)
         rows = conn.execute(
             """
-            SELECT * FROM character_relation_events
-            WHERE relation_id = ?
-            ORDER BY sequence ASC, id ASC
+            SELECT e.*, c.title AS chapter_title,
+                   c.chapter_number AS chapter_number
+              FROM character_relation_events e
+              LEFT JOIN chapters c
+                ON c.id = e.chapter_id AND c.novel_id = e.novel_id
+             WHERE e.relation_id = ?
+             ORDER BY e.sequence ASC, e.id ASC
             """,
             (relation_id,),
         ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "relation_id": r["relation_id"],
-            "event_type": r["event_type"],
-            "title": r["title"],
-            "description": r["description"],
-            "previous_data": _load_json(r["previous_data"]),
-            "new_data": _load_json(r["new_data"]),
-            "story_time": r["story_time"],
-            "chapter_id": r["chapter_id"],
-            "sequence": r["sequence"],
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
+    return [_to_event_out(r) for r in rows]
+
+
+def _to_event_out(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "relation_id": row["relation_id"],
+        "event_type": row["event_type"],
+        "title": row["title"],
+        "description": row["description"],
+        "previous_data": _load_json(row["previous_data"]),
+        "new_data": _load_json(row["new_data"]),
+        "story_time": row["story_time"],
+        "chapter_id": row["chapter_id"],
+        "chapter_title": row["chapter_title"],
+        "chapter_number": row["chapter_number"],
+        "sequence": row["sequence"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_relation_events_by_chapter(novel_id: str, chapter_id: str) -> list[dict]:
+    """章节关联的人物关系变化历史（关系事实，不是剧情事件）。"""
+    _ensure_novel(novel_id)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM chapters WHERE id = ? AND novel_id = ?",
+            (chapter_id, novel_id),
+        ).fetchone()
+        if row is None:
+            raise ServiceError(404, "章节不存在")
+        rows = conn.execute(
+            """
+            SELECT e.*, c.title AS chapter_title,
+                   c.chapter_number AS chapter_number,
+                   s.name AS source_name, t.name AS target_name
+              FROM character_relation_events e
+              JOIN character_relations r ON r.id = e.relation_id
+              JOIN characters s ON s.id = r.source_character_id
+              JOIN characters t ON t.id = r.target_character_id
+              LEFT JOIN chapters c
+                ON c.id = e.chapter_id AND c.novel_id = e.novel_id
+             WHERE e.novel_id = ? AND e.chapter_id = ?
+             ORDER BY e.sequence ASC, e.created_at ASC, e.id ASC
+            """,
+            (novel_id, chapter_id),
+        ).fetchall()
+    result = []
+    for r in rows:
+        item = _to_event_out(r)
+        item["source_name"] = r["source_name"]
+        item["target_name"] = r["target_name"]
+        result.append(item)
+    return result
 
 
 def list_character_relations(

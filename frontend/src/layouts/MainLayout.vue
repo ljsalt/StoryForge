@@ -17,6 +17,7 @@ import {
   MenuOutline,
   PeopleOutline,
   SettingsOutline,
+  SparklesOutline,
 } from '@vicons/ionicons5'
 import { useSystemStore } from '../stores/system'
 
@@ -55,6 +56,7 @@ const menuOptions: MenuOption[] = [
   { label: '创作首页', key: '/', icon: renderIcon(HomeOutline) },
   { label: '小说管理', key: '/novels', icon: renderIcon(BookOutline) },
   { label: '人物管理', key: '/characters', icon: renderIcon(PeopleOutline) },
+  { label: 'AI 引擎', key: '/ai', icon: renderIcon(SparklesOutline) },
   { label: '预设管理', key: '/presets', icon: renderIcon(AlbumsOutline) },
   { label: '系统设置', key: '/settings', icon: renderIcon(SettingsOutline) },
 ]

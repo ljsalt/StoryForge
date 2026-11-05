@@ -33,8 +33,7 @@ const loading = ref(false)
 const error = ref('')
 
 const futureModules = [
-  { title: '剧情记忆', desc: '剧情事件与上下文记忆', phase: 'P3.4' },
-  { title: '章节管理', desc: '章节规划与正文编辑', phase: 'P3.5' },
+  { title: '剧情记忆', desc: '自动提取事件并维护上下文记忆', phase: 'P4.1.3' },
 ]
 
 async function load(id: string) {
@@ -92,7 +91,9 @@ watch(
             >
               设为默认项目
             </n-button>
-            <n-button size="small" disabled>进入创作（尚未开放）</n-button>
+            <n-button size="small" type="primary" @click="router.push(`/novels/${novel.id}/writing`)">
+              进入创作工作台
+            </n-button>
           </div>
         </div>
 
@@ -146,6 +147,14 @@ watch(
           <n-grid-item>
             <n-card size="small">
               <n-statistic label="章节数量" :value="novel.stats.chapter_count" />
+            </n-card>
+          </n-grid-item>
+          <n-grid-item>
+            <n-card size="small">
+              <n-statistic
+                label="已完成章节"
+                :value="novel.stats.completed_chapter_count"
+              />
             </n-card>
           </n-grid-item>
           <n-grid-item>
@@ -213,6 +222,54 @@ watch(
           </div>
         </n-card>
 
+        <n-card title="章节管理" size="small" class="world-entry">
+          <div class="world-entry-body">
+            <div class="world-entry-text">
+              共 {{ novel.stats.chapter_count }} 章，已完成
+              {{ novel.stats.completed_chapter_count }} 章，累计
+              {{ novel.stats.word_count.toLocaleString() }} 字。支持章节目录、正文编辑、字数统计与顺序调整。
+            </div>
+            <n-button
+              size="small"
+              type="primary"
+              @click="router.push(`/novels/${novel.id}/chapters`)"
+            >
+              进入章节管理
+            </n-button>
+          </div>
+        </n-card>
+
+        <n-card title="剧情事件" size="small" class="world-entry">
+          <div class="world-entry-body">
+            <div class="world-entry-text">
+              记录故事事实、故事发生时间、关联章节与参与人物，并按故事时间形成剧情时间线。
+            </div>
+            <n-button
+              size="small"
+              type="primary"
+              @click="router.push(`/novels/${novel.id}/plot-events`)"
+            >
+              进入剧情事件
+            </n-button>
+          </div>
+        </n-card>
+
+        <n-card title="创作工作台" size="small" class="world-entry">
+          <div class="world-entry-body">
+            <div class="world-entry-text">
+              剧情导演生成结构化计划，审核重大剧情决定后由正文作者分段写作，
+              草稿经你确认后才写入正式章节。
+            </div>
+            <n-button
+              size="small"
+              type="primary"
+              @click="router.push(`/novels/${novel.id}/writing`)"
+            >
+              进入创作工作台
+            </n-button>
+          </div>
+        </n-card>
+
         <n-card title="创作进度" size="small">
           <n-progress
             type="line"
@@ -232,7 +289,7 @@ watch(
           />
           <div class="progress-hint">
             当前 {{ novel.current_word_count.toLocaleString() }} 字 / 目标
-            {{ novel.target_word_count.toLocaleString() }} 字。章节系统开放后此处将展示真实进度。
+            {{ novel.target_word_count.toLocaleString() }} 字，按章节正文实际字数统计。
           </div>
         </n-card>
 

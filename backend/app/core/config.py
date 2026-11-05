@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "StoryForge"
-    version: str = "0.4.0-P3.3"
+    version: str = "0.5.0-P4.1.1"
     host: str = "0.0.0.0"
     port: int = 8000
     # 允许的前端来源（逗号分隔），局域网来源由 main.py 中的正则统一放行
@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     # 调用第三方模型接口的超时（秒）
     model_request_timeout: float = 20.0
+    # AI 上下文默认 Token 预算（保守估算），接口可按需覆盖
+    ai_context_token_budget: int = 6000
     # 是否允许把模型 Base URL 指向本机/内网地址。
     # 默认关闭以降低 SSRF 风险；本地部署模型时可显式开启。
     allow_private_endpoints: bool = False

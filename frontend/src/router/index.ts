@@ -52,6 +52,24 @@ const router = createRouter({
           meta: { title: '人物关系' },
         },
         {
+          path: 'novels/:id/chapters',
+          name: 'novel-chapters',
+          component: () => import('../views/Chapters.vue'),
+          meta: { title: '章节管理' },
+        },
+        {
+          path: 'novels/:id/writing',
+          name: 'novel-writing',
+          component: () => import('../views/WritingWorkbench.vue'),
+          meta: { title: '创作工作台' },
+        },
+        {
+          path: 'novels/:id/plot-events',
+          name: 'novel-plot-events',
+          component: () => import('../views/PlotEvents.vue'),
+          meta: { title: '剧情事件' },
+        },
+        {
           path: 'characters',
           name: 'characters',
           component: () => import('../views/CharacterManager.vue'),
@@ -62,6 +80,12 @@ const router = createRouter({
           name: 'character-relations',
           component: () => import('../views/CharacterRelations.vue'),
           meta: { title: '人物关系' },
+        },
+        {
+          path: 'ai',
+          name: 'ai',
+          component: () => import('../views/AiEngine.vue'),
+          meta: { title: 'AI 引擎' },
         },
         {
           path: 'presets',
