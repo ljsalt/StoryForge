@@ -18,6 +18,16 @@ data/backups/*
 !data/novels/.gitkeep
 !data/backups/.gitkeep
 
+# ---- 本地数据库与 API Key 加密主密钥（禁止入库） ----
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/secrets/
+
+# ---- 测试缓存 ----
+.pytest_cache/
+
 # ---- 系统与编辑器 ----
 .DS_Store
 Thumbs.db

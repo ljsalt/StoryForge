@@ -1,96 +1,84 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import {
-  NButton,
-  NCard,
-  NDescriptions,
-  NDescriptionsItem,
-  NEmpty,
-  NTag,
-} from 'naive-ui'
-import { apiBaseURL } from '../api'
-import { useSystemStore } from '../stores/system'
+import { onMounted, ref } from 'vue'
+import { useMessage } from 'naive-ui'
+import { NAlert, NButton, NTabPane, NTabs } from 'naive-ui'
+import ProviderPanel from '../components/settings/ProviderPanel.vue'
+import ModelPanel from '../components/settings/ModelPanel.vue'
+import TaskAssignPanel from '../components/settings/TaskAssignPanel.vue'
+import DefaultsPanel from '../components/settings/DefaultsPanel.vue'
+import { extractError } from '../api/error'
+import { useModelStore } from '../stores/models'
 
-const system = useSystemStore()
+const store = useModelStore()
+const message = useMessage()
 
-onMounted(() => {
-  system.refresh()
-})
+const activeTab = ref('providers')
+const loadError = ref('')
+const loading = ref(false)
+
+async function loadAll() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    await store.loadAll()
+  } catch (error) {
+    loadError.value = extractError(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function retry() {
+  await loadAll()
+  if (!loadError.value) message.success('已重新加载配置')
+}
+
+onMounted(loadAll)
 </script>
 
 <template>
   <div class="page">
-    <h2 class="page-title">系统设置</h2>
-
-    <n-card title="后端服务" class="section-card">
-      <n-descriptions :column="1" label-placement="left" bordered>
-        <n-descriptions-item label="接口地址">
-          {{ apiBaseURL }}
-        </n-descriptions-item>
-        <n-descriptions-item label="连接状态">
-          <n-tag v-if="system.online" type="success" size="small" round>已连接</n-tag>
-          <n-tag v-else type="error" size="small" round>未连接</n-tag>
-        </n-descriptions-item>
-        <n-descriptions-item label="后端版本">
-          {{ system.health?.version ?? '-' }}
-        </n-descriptions-item>
-        <n-descriptions-item label="Python 版本">
-          {{ system.info?.python_version ?? '-' }}
-        </n-descriptions-item>
-      </n-descriptions>
-      <div class="actions">
-        <n-button size="small" :loading="system.loading" @click="system.refresh()">
-          刷新状态
-        </n-button>
+    <div class="page-header">
+      <div>
+        <h2 class="page-title">系统设置</h2>
+        <div class="page-sub">统一模型接口与 API 管理</div>
       </div>
-    </n-card>
+    </div>
 
-    <n-card title="数据目录" class="section-card">
-      <n-descriptions v-if="system.info" :column="1" label-placement="left" bordered>
-        <n-descriptions-item label="目录路径">
-          {{ system.info.data_dir }}
-        </n-descriptions-item>
-        <n-descriptions-item label="目录状态">
-          <n-tag
-            :type="system.info.data_dir_status.exists ? 'success' : 'error'"
-            size="small"
-            round
-          >
-            {{ system.info.data_dir_status.exists ? '正常' : '缺失' }}
-          </n-tag>
-        </n-descriptions-item>
-        <n-descriptions-item label="小说目录">
-          {{ system.info.data_dir_status.novels_dir ? '已就绪' : '未创建' }}
-        </n-descriptions-item>
-        <n-descriptions-item label="备份目录">
-          {{ system.info.data_dir_status.backups_dir ? '已就绪' : '未创建' }}
-        </n-descriptions-item>
-      </n-descriptions>
-      <n-empty v-else description="后端离线，无法获取目录信息" />
-    </n-card>
+    <n-alert v-if="loadError" type="error" :bordered="false" class="load-error">
+      {{ loadError }}
+      <n-button size="tiny" class="retry-btn" @click="retry">重试</n-button>
+    </n-alert>
 
-    <n-card title="关于" class="section-card">
-      <n-descriptions :column="1" label-placement="left" bordered>
-        <n-descriptions-item label="项目名称">
-          {{ system.info?.project_name ?? 'StoryForge' }}
-        </n-descriptions-item>
-        <n-descriptions-item label="当前阶段">P1：项目初始化与基础访问</n-descriptions-item>
-        <n-descriptions-item label="访问说明">
-          服务仅监听可信局域网。手机与电脑连接同一 Wi-Fi 后，
-          使用电脑局域网 IP 加端口 5173 即可访问前端。
-        </n-descriptions-item>
-      </n-descriptions>
-    </n-card>
+    <n-tabs v-model:value="activeTab" type="line" animated class="settings-tabs">
+      <n-tab-pane name="providers" tab="API 服务商">
+        <ProviderPanel />
+      </n-tab-pane>
+      <n-tab-pane name="models" tab="模型管理">
+        <ModelPanel />
+      </n-tab-pane>
+      <n-tab-pane name="tasks" tab="任务模型分配">
+        <TaskAssignPanel />
+      </n-tab-pane>
+      <n-tab-pane name="defaults" tab="默认设置">
+        <DefaultsPanel />
+      </n-tab-pane>
+    </n-tabs>
   </div>
 </template>
 
 <style scoped>
 .page {
-  max-width: 720px;
+  max-width: 1080px;
   margin: 0 auto;
+}
+
+.page-header {
   display: flex;
-  flex-direction: column;
-  gap: 20px;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
 }
 
 .page-title {
@@ -99,13 +87,23 @@ onMounted(() => {
   color: #fff;
 }
 
-.section-card {
-  width: 100%;
+.page-sub {
+  margin-top: 4px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.45);
 }
 
-.actions {
-  margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
+.load-error {
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.retry-btn {
+  margin-left: 8px;
+}
+
+.settings-tabs :deep(.n-tabs-nav) {
+  overflow-x: auto;
+  flex-wrap: nowrap;
 }
 </style>

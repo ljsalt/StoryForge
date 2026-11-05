@@ -3,8 +3,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.character_relation_routes import router as character_relation_router
+from .api.character_routes import router as character_router
+from .api.model_routes import router as model_router
+from .api.novel_routes import router as novel_router
 from .api.routes import router
+from .api.world_routes import router as world_router
 from .core.config import DATA_DIR, get_settings
+from .database.db import init_database
 
 settings = get_settings()
 
@@ -23,6 +29,8 @@ async def lifespan(app: FastAPI):
     # 启动时确保数据目录存在
     (DATA_DIR / "novels").mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "backups").mkdir(parents=True, exist_ok=True)
+    # 幂等初始化数据库，不会删除或覆盖已有数据
+    init_database()
     yield
 
 
@@ -38,6 +46,11 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+app.include_router(model_router, prefix="/api")
+app.include_router(novel_router, prefix="/api")
+app.include_router(world_router, prefix="/api")
+app.include_router(character_router, prefix="/api")
+app.include_router(character_relation_router, prefix="/api")
 
 
 @app.get("/")
