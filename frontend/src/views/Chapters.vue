@@ -222,6 +222,13 @@ watch(
               <div class="chapter-actions" @click.stop>
                 <n-button size="tiny" quaternary @click="move(chapter, -1)">上移</n-button>
                 <n-button size="tiny" quaternary @click="move(chapter, 1)">下移</n-button>
+                <n-button
+                  size="tiny"
+                  quaternary
+                  @click="router.push(`/novels/${currentNovelId}/chapters/${chapter.id}/continuity`)"
+                >
+                  连续性
+                </n-button>
                 <n-button size="tiny" quaternary type="primary" @click="openEdit(chapter)">编辑</n-button>
                 <n-button size="tiny" quaternary type="error" @click="confirmDelete(chapter)">删除</n-button>
               </div>

@@ -366,12 +366,18 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     user_prompt_template TEXT NOT NULL DEFAULT '',
     version              INTEGER NOT NULL DEFAULT 1,
     is_active            INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    -- P4.2 写作预设：复用模板存储，preset_config 保存风格/视角/尺度和成人向偏好等结构化字段
+    preset_config        TEXT NOT NULL DEFAULT '{}',
+    is_preset            INTEGER NOT NULL DEFAULT 0 CHECK (is_preset IN (0, 1)),
+    is_default           INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_prompt_templates_task
     ON prompt_templates (task_type, is_active, updated_at DESC);
+-- idx_prompt_templates_preset 在 init_database 的迁移段创建：
+-- 老库需要先 ALTER ADD COLUMN，SCHEMA 里直接建索引会因缺列而失败。
 
 CREATE TABLE IF NOT EXISTS prompt_template_versions (
     id                   TEXT PRIMARY KEY,
@@ -555,6 +561,158 @@ CREATE TABLE IF NOT EXISTS writing_draft_segments (
 CREATE INDEX IF NOT EXISTS idx_writing_segments_draft
     ON writing_draft_segments (draft_id, sequence);
 
+-- ----------------------------- P4.1.3 章节连续性检查与剧情记忆更新 -----------------------------
+
+-- 连续性检查记录：同一章节可多次检查，历史全部保留；
+-- 删除章节时仅解除关联（SET NULL），检查报告留档可追溯。
+-- context_meta 记录本次上下文的预算、裁剪与覆盖情况，
+-- 避免把模型没看到的信息误判为不存在。
+CREATE TABLE IF NOT EXISTS continuity_checks (
+    id             TEXT PRIMARY KEY,
+    novel_id       TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_id     TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    overall_result TEXT CHECK (overall_result IN ('pass', 'warning', 'conflict')),
+    report_json    TEXT NOT NULL DEFAULT '{}',
+    context_meta   TEXT NOT NULL DEFAULT '{}',
+    model_id       TEXT,
+    task_id        TEXT,
+    error_code     TEXT,
+    error_message  TEXT,
+    created_at     TEXT NOT NULL,
+    completed_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_continuity_checks_chapter
+    ON continuity_checks (novel_id, chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_continuity_checks_novel
+    ON continuity_checks (novel_id, created_at DESC);
+
+-- 记忆更新批次：一次章节记忆提取对应一个批次，允许用户分批审核。
+-- report_json 保存提取过程摘要（跳过/去重/未解析目标等说明）。
+CREATE TABLE IF NOT EXISTS memory_update_batches (
+    id          TEXT PRIMARY KEY,
+    novel_id    TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_id  TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    check_id    TEXT REFERENCES continuity_checks (id) ON DELETE SET NULL,
+    status      TEXT NOT NULL DEFAULT 'pending_review'
+                CHECK (status IN ('pending_review', 'partially_approved',
+                                  'approved', 'rejected', 'applied')),
+    report_json TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL,
+    reviewed_at TEXT,
+    applied_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_batches_chapter
+    ON memory_update_batches (novel_id, chapter_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_batches_novel
+    ON memory_update_batches (novel_id, created_at DESC);
+
+-- 记忆更新提案：AI 只生成提案，正式数据写入必须经人工审核后在事务中应用。
+-- proposal_type 描述变化语义（六类），target_type 描述数据库目标对象，两者分开。
+-- before_json 记录提案生成时的目标现状（用于应用时过期检测）；
+-- final_json 记录用户修改后的最终提交内容（modified 状态以它为准，不会被 AI 覆盖）。
+CREATE TABLE IF NOT EXISTS memory_update_proposals (
+    id             TEXT PRIMARY KEY,
+    batch_id       TEXT NOT NULL REFERENCES memory_update_batches (id) ON DELETE CASCADE,
+    novel_id       TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    proposal_type  TEXT NOT NULL
+                   CHECK (proposal_type IN ('character_state', 'character_relation',
+                                            'character_secret', 'plot_event',
+                                            'chapter_summary', 'world_entry')),
+    target_type    TEXT NOT NULL DEFAULT '',
+    target_id      TEXT,
+    operation      TEXT NOT NULL DEFAULT 'create'
+                   CHECK (operation IN ('create', 'update', 'end')),
+    before_json    TEXT NOT NULL DEFAULT '{}',
+    proposed_json  TEXT NOT NULL DEFAULT '{}',
+    final_json     TEXT,
+    reason         TEXT NOT NULL DEFAULT '',
+    source_excerpt TEXT NOT NULL DEFAULT '',
+    confidence     REAL NOT NULL DEFAULT 0.5,
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'accepted', 'modified',
+                                     'rejected', 'applied', 'conflict')),
+    user_note      TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    reviewed_at    TEXT,
+    applied_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_proposals_batch
+    ON memory_update_proposals (batch_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_proposals_novel
+    ON memory_update_proposals (novel_id, status);
+CREATE INDEX IF NOT EXISTS idx_memory_proposals_target
+    ON memory_update_proposals (novel_id, target_type, target_id);
+
+-- 快速写作会话（P4.2）：独立于 P4.1.2 剧情计划工作流，不经过计划与重大决定审核。
+-- 复用 writing_sessions 会把快速写作强行套进计划状态机（planning/awaiting_plan_approval），
+-- 因此单独建表；正文与分段只保存在本表及 quick_writing_segments，
+-- 只有用户显式确认后才写入 chapters 正式章节。
+CREATE TABLE IF NOT EXISTS quick_writing_sessions (
+    id                TEXT PRIMARY KEY,
+    novel_id          TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    chapter_id        TEXT REFERENCES chapters (id) ON DELETE SET NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    user_requirement  TEXT NOT NULL DEFAULT '',
+    preset_id         TEXT REFERENCES prompt_templates (id) ON DELETE SET NULL,
+    model_id          TEXT REFERENCES models (id) ON DELETE SET NULL,
+    model_label       TEXT NOT NULL DEFAULT '',
+    context_mode      TEXT NOT NULL DEFAULT 'auto'
+                      CHECK (context_mode IN ('auto', 'recent', 'full', 'custom')),
+    context_options   TEXT NOT NULL DEFAULT '{}',
+    style_overrides   TEXT NOT NULL DEFAULT '{}',
+    target_word_count INTEGER NOT NULL DEFAULT 1500 CHECK (target_word_count > 0),
+    segment_words     INTEGER NOT NULL DEFAULT 700 CHECK (segment_words > 0),
+    auto_continuity   INTEGER NOT NULL DEFAULT 0 CHECK (auto_continuity IN (0, 1)),
+    auto_memory       INTEGER NOT NULL DEFAULT 0 CHECK (auto_memory IN (0, 1)),
+    remind_memory     INTEGER NOT NULL DEFAULT 1 CHECK (remind_memory IN (0, 1)),
+    status            TEXT NOT NULL DEFAULT 'drafting'
+                      CHECK (status IN ('drafting', 'ready', 'confirmed',
+                                        'discarded', 'failed')),
+    content           TEXT NOT NULL DEFAULT '',
+    word_count        INTEGER NOT NULL DEFAULT 0,
+    edited            INTEGER NOT NULL DEFAULT 0 CHECK (edited IN (0, 1)),
+    error_code        TEXT,
+    error_message     TEXT,
+    -- 正在生成的分段序号与开始时间：用于拒绝并发生成、识别超时遗留任务
+    generating_seq    INTEGER,
+    generating_at     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    confirmed_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_quick_sessions_novel
+    ON quick_writing_sessions (novel_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quick_sessions_status
+    ON quick_writing_sessions (novel_id, status);
+
+-- 快速写作分段：每次生成一条，失败记录保留以便恢复与排查；
+-- 同一会话内 seq 唯一，重试时复用同一 seq 行
+CREATE TABLE IF NOT EXISTS quick_writing_segments (
+    id            TEXT PRIMARY KEY,
+    novel_id      TEXT NOT NULL REFERENCES novels (id) ON DELETE CASCADE,
+    session_id    TEXT NOT NULL REFERENCES quick_writing_sessions (id) ON DELETE CASCADE,
+    seq           INTEGER NOT NULL,
+    content       TEXT NOT NULL DEFAULT '',
+    word_count    INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'completed'
+                  CHECK (status IN ('completed', 'failed')),
+    error_code    TEXT,
+    error_message TEXT,
+    task_id       TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (session_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_quick_segments_session
+    ON quick_writing_segments (session_id, seq);
+
 -- 注意：引用 sequence 列的事件表索引不在 SCHEMA 中创建，
 -- 由 init_database 在 sequence 迁移完成后再建（见 CHAR_REL_EVENT_INDEXES_SQL）。
 """
@@ -635,6 +793,49 @@ WRITING_SEGMENT_STATUSES = ("pending", "generating", "completed", "failed")
 
 # 剧情事件重要程度
 PLOT_EVENT_IMPORTANCE_LEVELS = ("low", "normal", "high", "critical")
+
+# 连续性检查状态（P4.1.3）
+CONTINUITY_CHECK_STATUSES = ("pending", "running", "completed", "failed")
+# 连续性检查总体结论
+CONTINUITY_OVERALL_RESULTS = ("pass", "warning", "conflict")
+# 连续性问题严重程度
+CONTINUITY_SEVERITIES = ("info", "warning", "conflict")
+
+# 记忆更新批次状态
+MEMORY_BATCH_STATUSES = (
+    "pending_review",
+    "partially_approved",
+    "approved",
+    "rejected",
+    "applied",
+)
+
+# 记忆更新提案状态 / 类型 / 操作
+MEMORY_PROPOSAL_STATUSES = (
+    "pending",
+    "accepted",
+    "modified",
+    "rejected",
+    "applied",
+    "conflict",
+)
+MEMORY_PROPOSAL_TYPES = (
+    "character_state",
+    "character_relation",
+    "character_secret",
+    "plot_event",
+    "chapter_summary",
+    "world_entry",
+)
+MEMORY_PROPOSAL_OPERATIONS = ("create", "update", "end")
+
+# 快速写作上下文注入模式（P4.2）
+QUICK_CONTEXT_MODES = ("auto", "recent", "full", "custom")
+# 快速写作会话状态
+QUICK_SESSION_STATUSES = ("drafting", "ready", "confirmed", "discarded", "failed")
+# 快速写作分段状态
+QUICK_SEGMENT_STATUSES = ("completed", "failed")
+
 # 默认小说在 app_settings 中的键名
 DEFAULT_NOVEL_KEY = "default_novel_id"
 
@@ -918,3 +1119,43 @@ def init_database() -> None:
         except sqlite3.IntegrityError:
             _dedupe_active_relations(conn)
             conn.execute(CHAR_RELATION_ACTIVE_UNIQUE_SQL)
+
+        # 迁移：P4.2 写作预设复用 prompt_templates 存储，老库补三列。
+        # 新库的 CREATE TABLE 已声明，不会重复执行。
+        template_cols = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(prompt_templates)").fetchall()
+        ]
+        if "preset_config" not in template_cols:
+            conn.execute(
+                "ALTER TABLE prompt_templates ADD COLUMN preset_config TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "is_preset" not in template_cols:
+            conn.execute(
+                "ALTER TABLE prompt_templates ADD COLUMN is_preset INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_default" not in template_cols:
+            conn.execute(
+                "ALTER TABLE prompt_templates ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_prompt_templates_preset
+                ON prompt_templates (is_preset, is_active, updated_at DESC);
+            """
+        )
+
+        # 迁移：若老库已经创建过 quick_writing_sessions（早期开发版本），
+        # 补上生成锁字段；新库的 CREATE TABLE 已声明。
+        quick_cols = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(quick_writing_sessions)").fetchall()
+        ]
+        if "generating_seq" not in quick_cols:
+            conn.execute(
+                "ALTER TABLE quick_writing_sessions ADD COLUMN generating_seq INTEGER"
+            )
+        if "generating_at" not in quick_cols:
+            conn.execute(
+                "ALTER TABLE quick_writing_sessions ADD COLUMN generating_at TEXT"
+            )

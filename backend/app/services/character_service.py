@@ -345,44 +345,54 @@ def get_state(novel_id: str, character_id: str) -> dict:
     return _to_state_out(row)
 
 
+def _update_state_in_conn(
+    conn: sqlite3.Connection, novel_id: str, character_id: str, fields: dict, now: str
+) -> None:
+    """在已有事务连接内更新人物当前状态（仅更新非 None 字段）。
+
+    供 update_state 与 P4.1.3 记忆提案应用共用；状态记录缺失时自动初始化。
+    """
+    _character_row(conn, novel_id, character_id)
+
+    updates: dict[str, object] = {}
+    for key in (
+        "life_status", "current_location", "current_faction",
+        "current_cultivation", "health_status", "emotional_state",
+        "current_goal", "current_status",
+    ):
+        if fields.get(key) is not None:
+            updates[key] = fields[key]
+    if fields.get("attributes") is not None:
+        updates["attributes"] = _dump_json(fields["attributes"], "状态自定义属性")
+
+    if not updates:
+        return
+
+    updates["updated_at"] = now
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    rows = conn.execute(
+        f"UPDATE character_states SET {assignments} WHERE character_id = ?",
+        list(updates.values()) + [character_id],
+    ).rowcount
+    if rows == 0:
+        # 状态记录缺失时自动初始化一条默认状态，避免人物无当前状态
+        conn.execute(
+            """
+            INSERT INTO character_states
+                (id, character_id, life_status, current_location, current_faction,
+                 current_cultivation, health_status, emotional_state, current_goal,
+                 current_status, attributes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (uuid4().hex, character_id, "alive", "", "", "", "", "", "", "", "{}", now),
+        )
+
+
 def update_state(novel_id: str, character_id: str, fields: dict) -> dict:
     _ensure_novel(novel_id)
     now = _now()
     with get_connection() as conn:
-        _character_row(conn, novel_id, character_id)
-
-        updates: dict[str, object] = {}
-        for key in (
-            "life_status", "current_location", "current_faction",
-            "current_cultivation", "health_status", "emotional_state",
-            "current_goal", "current_status",
-        ):
-            if fields.get(key) is not None:
-                updates[key] = fields[key]
-        if fields.get("attributes") is not None:
-            updates["attributes"] = _dump_json(fields["attributes"], "状态自定义属性")
-
-        if not updates:
-            return get_state(novel_id, character_id)
-
-        updates["updated_at"] = now
-        assignments = ", ".join(f"{key} = ?" for key in updates)
-        rows = conn.execute(
-            f"UPDATE character_states SET {assignments} WHERE character_id = ?",
-            list(updates.values()) + [character_id],
-        ).rowcount
-        if rows == 0:
-            # 状态记录缺失时自动初始化一条默认状态，避免人物无当前状态
-            conn.execute(
-                """
-                INSERT INTO character_states
-                    (id, character_id, life_status, current_location, current_faction,
-                     current_cultivation, health_status, emotional_state, current_goal,
-                     current_status, attributes, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (uuid4().hex, character_id, "alive", "", "", "", "", "", "", "", "{}", now),
-            )
+        _update_state_in_conn(conn, novel_id, character_id, fields, now)
     return get_state(novel_id, character_id)
 
 
@@ -416,31 +426,42 @@ def get_secret(novel_id: str, character_id: str, secret_id: str) -> dict:
     return _to_secret_out(row)
 
 
+def _create_secret_in_conn(
+    conn: sqlite3.Connection, novel_id: str, character_id: str, payload: dict, now: str
+) -> str:
+    """在已有事务连接内创建人物秘密，返回 secret_id。
+
+    供 create_secret 与 P4.1.3 记忆提案应用共用。
+    """
+    _character_row(conn, novel_id, character_id)
+    secret_id = uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO character_secrets
+            (id, character_id, title, content, secrecy_level, reveal_status,
+             notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            secret_id,
+            character_id,
+            payload["title"],
+            payload.get("content", ""),
+            payload.get("secrecy_level", "restricted"),
+            payload.get("reveal_status", "unrevealed"),
+            payload.get("notes", ""),
+            now,
+            now,
+        ),
+    )
+    return secret_id
+
+
 def create_secret(novel_id: str, character_id: str, payload: dict) -> dict:
     _ensure_novel(novel_id)
     now = _now()
-    secret_id = uuid4().hex
     with get_connection() as conn:
-        _character_row(conn, novel_id, character_id)
-        conn.execute(
-            """
-            INSERT INTO character_secrets
-                (id, character_id, title, content, secrecy_level, reveal_status,
-                 notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                secret_id,
-                character_id,
-                payload["title"],
-                payload.get("content", ""),
-                payload.get("secrecy_level", "restricted"),
-                payload.get("reveal_status", "unrevealed"),
-                payload.get("notes", ""),
-                now,
-                now,
-            ),
-        )
+        secret_id = _create_secret_in_conn(conn, novel_id, character_id, payload, now)
     return get_secret(novel_id, character_id, secret_id)
 
 

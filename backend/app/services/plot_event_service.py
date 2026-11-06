@@ -243,64 +243,76 @@ def get_event(novel_id: str, event_id: str) -> dict:
     return _to_out(row, grouped.get(event_id, []))
 
 
-def create_event(novel_id: str, payload: dict) -> dict:
-    _ensure_novel(novel_id)
+def _create_event_in_conn(
+    conn: sqlite3.Connection, novel_id: str, payload: dict, now: str
+) -> str:
+    """在已有事务连接内创建剧情事件（含参与者），返回 event_id。
+
+    供 create_event 与 P4.1.3 记忆提案应用共用：业务校验失败抛 ServiceError，
+    数据库约束冲突由调用方所在事务统一翻译/回滚。
+    """
     importance = payload.get("importance") or "normal"
     _check_importance(importance)
-    now = _now()
     event_id = uuid4().hex
     participants = payload.get("participants") or []
 
-    with _event_txn() as conn:
-        _validate_chapter(conn, novel_id, payload.get("chapter_id"))
-        location_name = payload.get("location_name") or ""
-        snapshot = _location_snapshot(conn, novel_id, payload.get("location_id"))
-        if snapshot and not location_name:
-            location_name = snapshot
-        character_rows = _validate_participants(conn, novel_id, participants)
+    _validate_chapter(conn, novel_id, payload.get("chapter_id"))
+    location_name = payload.get("location_name") or ""
+    snapshot = _location_snapshot(conn, novel_id, payload.get("location_id"))
+    if snapshot and not location_name:
+        location_name = snapshot
+    _validate_participants(conn, novel_id, participants)
 
+    conn.execute(
+        """
+        INSERT INTO plot_events
+            (id, novel_id, chapter_id, title, description, event_type, story_time,
+             location_id, location_name, importance, sequence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            novel_id,
+            payload.get("chapter_id"),
+            payload["title"],
+            payload.get("description") or "",
+            payload.get("event_type") or "",
+            (payload.get("story_time") or "").strip() or None,
+            payload.get("location_id"),
+            location_name,
+            importance,
+            int(payload.get("sequence") or 0),
+            now,
+            now,
+        ),
+    )
+
+    for item in participants:
         conn.execute(
             """
-            INSERT INTO plot_events
-                (id, novel_id, chapter_id, title, description, event_type, story_time,
-                 location_id, location_name, importance, sequence, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO plot_event_characters
+                (id, novel_id, event_id, character_id, participant_role,
+                 description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                event_id,
+                uuid4().hex,
                 novel_id,
-                payload.get("chapter_id"),
-                payload["title"],
-                payload.get("description") or "",
-                payload.get("event_type") or "",
-                (payload.get("story_time") or "").strip() or None,
-                payload.get("location_id"),
-                location_name,
-                importance,
-                int(payload.get("sequence") or 0),
-                now,
+                event_id,
+                item["character_id"],
+                item.get("participant_role") or "",
+                item.get("description") or "",
                 now,
             ),
         )
+    return event_id
 
-        for item in participants:
-            conn.execute(
-                """
-                INSERT INTO plot_event_characters
-                    (id, novel_id, event_id, character_id, participant_role,
-                     description, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    uuid4().hex,
-                    novel_id,
-                    event_id,
-                    item["character_id"],
-                    item.get("participant_role") or "",
-                    item.get("description") or "",
-                    now,
-                ),
-            )
+
+def create_event(novel_id: str, payload: dict) -> dict:
+    _ensure_novel(novel_id)
+    now = _now()
+    with _event_txn() as conn:
+        event_id = _create_event_in_conn(conn, novel_id, payload, now)
     return get_event(novel_id, event_id)
 
 

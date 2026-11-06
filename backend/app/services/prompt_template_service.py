@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -56,6 +57,15 @@ def _check_task_type(task_type: str) -> None:
         raise ServiceError(400, "不支持的任务类型")
 
 
+def _parse_preset_config(value: str | None) -> dict:
+    """解析预设配置；历史脏数据不应导致接口 500。"""
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _to_out(row) -> dict:
     return {
         "id": row["id"],
@@ -66,6 +76,9 @@ def _to_out(row) -> dict:
         "user_prompt_template": row["user_prompt_template"],
         "version": row["version"],
         "is_active": bool(row["is_active"]),
+        "is_preset": bool(row["is_preset"]),
+        "is_default": bool(row["is_default"]),
+        "preset_config": _parse_preset_config(row["preset_config"]),
         "variables": extract_variables(
             (row["system_prompt"] or "") + "\n" + (row["user_prompt_template"] or "")
         ),
@@ -106,12 +119,19 @@ def _snapshot(conn, template_row) -> None:
 
 
 def list_templates(
-    task_type: str | None = None, *, include_inactive: bool = False
+    task_type: str | None = None,
+    *,
+    include_inactive: bool = False,
+    include_presets: bool = False,
 ) -> list[dict]:
     if task_type and task_type.strip():
         _check_task_type(task_type.strip())
     sql = ["SELECT * FROM prompt_templates WHERE 1 = 1"]
     params: list[object] = []
+    if not include_presets:
+        # 写作预设和普通提示词模板共用一张表，但默认互相隔离：
+        # 预设只在写作预设管理接口中出现，不污染原有模板列表。
+        sql.append(" AND is_preset = 0")
     if task_type and task_type.strip():
         sql.append(" AND task_type = ?")
         params.append(task_type.strip())
@@ -136,13 +156,15 @@ def create_template(payload: dict) -> dict:
         raise ServiceError(400, "模板名称不能为空")
     now = _now()
     template_id = uuid4().hex
+    preset_config = payload.get("preset_config")
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO prompt_templates
                 (id, name, task_type, description, system_prompt,
-                 user_prompt_template, version, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                 user_prompt_template, version, is_active, preset_config,
+                 is_preset, is_default, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             """,
             (
                 template_id,
@@ -152,6 +174,10 @@ def create_template(payload: dict) -> dict:
                 str(payload.get("system_prompt") or ""),
                 str(payload.get("user_prompt_template") or ""),
                 1 if payload.get("is_active", True) else 0,
+                json.dumps(preset_config, ensure_ascii=False)
+                if isinstance(preset_config, dict) else "{}",
+                1 if payload.get("is_preset") else 0,
+                1 if payload.get("is_default") else 0,
                 now,
                 now,
             ),
@@ -175,6 +201,15 @@ def update_template(template_id: str, fields: dict) -> dict:
         for key in ("description", "system_prompt", "user_prompt_template"):
             if fields.get(key) is not None:
                 updates[key] = str(fields[key])
+        if fields.get("preset_config") is not None:
+            config = fields["preset_config"]
+            updates["preset_config"] = (
+                json.dumps(config, ensure_ascii=False) if isinstance(config, dict) else "{}"
+            )
+        if fields.get("is_preset") is not None:
+            updates["is_preset"] = 1 if fields["is_preset"] else 0
+        if fields.get("is_default") is not None:
+            updates["is_default"] = 1 if fields["is_default"] else 0
         if fields.get("is_active") is not None:
             updates["is_active"] = 1 if fields["is_active"] else 0
         if not updates:
@@ -183,7 +218,7 @@ def update_template(template_id: str, fields: dict) -> dict:
         content_changed = any(
             key in updates
             for key in ("name", "task_type", "description",
-                        "system_prompt", "user_prompt_template")
+                        "system_prompt", "user_prompt_template", "preset_config")
         )
         if content_changed:
             updates["version"] = int(row["version"]) + 1
@@ -290,7 +325,7 @@ def get_active_for_task(task_type: str) -> dict | None:
         row = conn.execute(
             """
             SELECT * FROM prompt_templates
-             WHERE task_type = ? AND is_active = 1
+             WHERE task_type = ? AND is_active = 1 AND is_preset = 0
              ORDER BY updated_at DESC
              LIMIT 1
             """,

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "StoryForge"
-    version: str = "0.5.0-P4.1.1"
+    version: str = "0.6.0-P4.2"
     host: str = "0.0.0.0"
     port: int = 8000
     # 允许的前端来源（逗号分隔），局域网来源由 main.py 中的正则统一放行

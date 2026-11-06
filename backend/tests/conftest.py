@@ -39,6 +39,7 @@ class FakeAIQueue:
 
     def __init__(self) -> None:
         self.items: list = []
+        self.requests: list = []
 
     def push(self, item) -> None:
         self.items.append(item)
@@ -81,6 +82,8 @@ def fake_ai(monkeypatch):
         async def chat(self, request):
             from app.adapters.base import CompletionResult
 
+            # 记录请求供测试断言预设注入、模型切换与上下文内容
+            queue.requests.append(request)
             if not queue.items:
                 return CompletionResult(content="默认正文内容。", model=request.model)
             item = queue.items.pop(0)

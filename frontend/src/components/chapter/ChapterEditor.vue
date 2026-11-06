@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NButton,
   NDivider,
@@ -44,6 +45,7 @@ const emit = defineEmits<{ 'update:show': [v: boolean]; saved: [chapter: Chapter
 
 const message = useMessage()
 const dialog = useDialog()
+const router = useRouter()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -303,6 +305,14 @@ onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload))
       <n-space justify="space-between" align="center">
         <span class="editor-hint">正文可以为空；字数由后端根据正文重新计算。</span>
         <n-space>
+          <n-button
+            v-if="chapterId"
+            size="small"
+            quaternary
+            @click="router.push(`/novels/${novelId}/chapters/${chapterId}/continuity`)"
+          >
+            连续性与记忆
+          </n-button>
           <n-button size="small" :disabled="saving" @click="attemptClose">取消</n-button>
           <n-button size="small" type="primary" :loading="saving" :disabled="loading" @click="submit">
             {{ chapterId ? '保存修改' : '创建章节' }}

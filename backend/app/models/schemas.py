@@ -1650,3 +1650,313 @@ class WritingDraftOut(BaseModel):
     confirmed_at: str | None = None
     segments: list[WritingSegmentOut] = Field(default_factory=list)
     progress: dict[str, Any] = Field(default_factory=dict)
+
+
+# ----------------------------- P4.1.3 连续性检查与记忆更新 -----------------------------
+
+
+class ContinuityCheckCreate(BaseModel):
+    """创建连续性检查任务。"""
+
+    character_ids: list[str] | None = None
+    model_id: str | None = Field(default=None, max_length=64)
+    token_budget: int | None = Field(default=None, ge=200, le=200000)
+    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=256, le=32768)
+
+
+class ContinuityIssueOut(BaseModel):
+    severity: Literal["info", "warning", "conflict"]
+    category: str = ""
+    description: str
+    evidence: str = ""
+    reference: str = ""
+    suggestion: str = ""
+
+
+class ContinuityReportOut(BaseModel):
+    overall: Literal["pass", "warning", "conflict"]
+    issues: list[ContinuityIssueOut] = Field(default_factory=list)
+
+
+class ContinuityCheckOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_id: str | None = None
+    status: Literal["pending", "running", "completed", "failed"]
+    overall_result: Literal["pass", "warning", "conflict"] | None = None
+    report: dict[str, Any] = Field(default_factory=dict)
+    context_meta: dict[str, Any] = Field(default_factory=dict)
+    model_id: str | None = None
+    task_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
+class MemoryBatchCreate(BaseModel):
+    """创建记忆提取任务。"""
+
+    check_id: str | None = Field(default=None, max_length=64)
+    model_id: str | None = Field(default=None, max_length=64)
+    token_budget: int | None = Field(default=None, ge=200, le=200000)
+    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=256, le=32768)
+
+
+class MemoryProposalOut(BaseModel):
+    id: str
+    batch_id: str
+    novel_id: str
+    proposal_type: str
+    target_type: str = ""
+    target_id: str | None = None
+    operation: str = "create"
+    before: dict[str, Any] = Field(default_factory=dict)
+    proposed: dict[str, Any] = Field(default_factory=dict)
+    final: dict[str, Any] | None = None
+    reason: str = ""
+    source_excerpt: str = ""
+    confidence: float = 0.5
+    status: str = "pending"
+    user_note: str = ""
+    apply_supported: bool = True
+    current: Any = None
+    created_at: str
+    reviewed_at: str | None = None
+    applied_at: str | None = None
+
+
+class MemoryBatchOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_id: str | None = None
+    check_id: str | None = None
+    status: str
+    report: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    reviewed_at: str | None = None
+    applied_at: str | None = None
+    proposal_count: int | None = None
+    proposals: list[MemoryProposalOut] | None = None
+
+
+class MemoryProposalUpdate(BaseModel):
+    """修改提案内容：用户修改后的 final_json 才是最终提交内容。"""
+
+    final_json: dict[str, Any]
+    user_note: str = Field(default="", max_length=2000)
+
+
+class MemoryProposalReviewAction(BaseModel):
+    user_note: str = Field(default="", max_length=2000)
+
+
+class MemoryBatchReviewItem(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    action: Literal["accept", "reject", "modify", "reset"]
+    final_json: dict[str, Any] | None = None
+    user_note: str = Field(default="", max_length=2000)
+
+
+class MemoryBatchReviewRequest(BaseModel):
+    items: list[MemoryBatchReviewItem] = Field(min_length=1, max_length=200)
+
+
+class MemoryApplyResult(BaseModel):
+    batch: MemoryBatchOut
+    applied: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ----------------------------- P4.2 快速写作与写作预设 -----------------------------
+
+
+class WritingPresetConfig(BaseModel):
+    """写作预设的结构化配置；全部为自然语言，不做固定模板化限制。"""
+
+    writing_style: str = Field(default="", max_length=2000)
+    narrative_perspective: str = Field(default="", max_length=500)
+    person: str = Field(default="", max_length=200)
+    language_style: str = Field(default="", max_length=1000)
+    dialogue_style: str = Field(default="", max_length=1000)
+    style_constraints: str = Field(default="", max_length=2000)
+    extra_prompt: str = Field(default="", max_length=5000)
+    adult_genres: list[str] = Field(default_factory=list, max_length=20)
+    relationship_background: str = Field(default="", max_length=5000)
+    adult_narrative_style: str = Field(default="", max_length=1000)
+    intensity: str = Field(default="", max_length=200)
+    conventions: str = Field(default="", max_length=5000)
+    forbidden: str = Field(default="", max_length=2000)
+
+
+class WritingPresetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    system_prompt: str = Field(default="", max_length=20000)
+    config: WritingPresetConfig = Field(default_factory=WritingPresetConfig)
+    is_active: bool = True
+    is_default: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("预设名称不能为空")
+        return value
+
+
+class WritingPresetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    system_prompt: str | None = Field(default=None, max_length=20000)
+    config: WritingPresetConfig | None = None
+    is_active: bool | None = None
+
+
+class WritingPresetCopy(BaseModel):
+    name: str = Field(default="", max_length=100)
+
+
+class WritingPresetOut(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    system_prompt: str = ""
+    config: WritingPresetConfig
+    version: int = 1
+    is_active: bool = True
+    is_default: bool = False
+    variables: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class NovelWritingPresetAssign(BaseModel):
+    preset_id: str | None = Field(default=None, max_length=64)
+
+
+class NovelWritingPresetOut(BaseModel):
+    novel_id: str
+    preset_id: str | None = None
+    preset: WritingPresetOut | None = None
+
+
+class QuickWritingSessionCreate(BaseModel):
+    title: str = Field(default="", max_length=200)
+    user_requirement: str = Field(default="", max_length=5000)
+    preset_id: str | None = Field(default=None, max_length=64)
+    model_id: str | None = Field(default=None, max_length=64)
+    context_mode: Literal["auto", "recent", "full", "custom"] = "auto"
+    context_options: dict[str, Any] = Field(default_factory=dict)
+    style_overrides: dict[str, Any] = Field(default_factory=dict)
+    target_word_count: int = Field(default=1500, ge=200, le=20000)
+    segment_words: int = Field(default=700, ge=200, le=4000)
+    auto_continuity: bool = False
+    auto_memory: bool = False
+    remind_memory: bool = True
+    chapter_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("preset_id", "model_id", "chapter_id")
+    @classmethod
+    def _strip_optional_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("context_options")
+    @classmethod
+    def _check_context_options(cls, value: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"sections", "include_recent_chapter", "recent_chapters",
+                   "recent_chapter_chars"}
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError("不支持的上下文选项：" + "、".join(sorted(unknown)))
+        sections = value.get("sections")
+        if sections is not None and (
+            not isinstance(sections, list) or len(sections) > 20
+        ):
+            raise ValueError("sections 必须是字符串数组")
+        return value
+
+
+class QuickWritingSessionUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    user_requirement: str | None = Field(default=None, max_length=5000)
+    preset_id: str | None = Field(default=None, max_length=64)
+    model_id: str | None = Field(default=None, max_length=64)
+    chapter_id: str | None = Field(default=None, max_length=64)
+    context_mode: Literal["auto", "recent", "full", "custom"] | None = None
+    context_options: dict[str, Any] | None = None
+    style_overrides: dict[str, Any] | None = None
+    target_word_count: int | None = Field(default=None, ge=200, le=20000)
+    segment_words: int | None = Field(default=None, ge=200, le=4000)
+    auto_continuity: bool | None = None
+    auto_memory: bool | None = None
+    remind_memory: bool | None = None
+
+
+class QuickWritingGenerateRequest(BaseModel):
+    seq: int | None = Field(default=None, ge=1, le=30)
+    extra_instruction: str = Field(default="", max_length=5000)
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    # 正文较长且部分模型带思维链，默认给足输出预算，避免被截断
+    max_tokens: int = Field(default=8192, ge=256, le=32768)
+
+
+class QuickWritingContentUpdate(BaseModel):
+    content: str = Field(max_length=200000)
+
+
+class QuickWritingConfirmRequest(BaseModel):
+    mode: Literal["new_chapter", "replace_existing"] = "new_chapter"
+    chapter_title: str = Field(default="", max_length=200)
+    summary: str = Field(default="", max_length=500)
+
+
+class QuickWritingSegmentOut(BaseModel):
+    id: str
+    session_id: str
+    seq: int
+    content: str = ""
+    word_count: int = 0
+    status: Literal["completed", "failed"]
+    error_code: str | None = None
+    error_message: str | None = None
+    task_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class QuickWritingSessionOut(BaseModel):
+    id: str
+    novel_id: str
+    chapter_id: str | None = None
+    title: str = ""
+    user_requirement: str = ""
+    preset_id: str | None = None
+    preset_name: str = ""
+    model_id: str | None = None
+    model_label: str = ""
+    context_mode: Literal["auto", "recent", "full", "custom"]
+    context_options: dict[str, Any] = Field(default_factory=dict)
+    style_overrides: dict[str, Any] = Field(default_factory=dict)
+    target_word_count: int = 1500
+    segment_words: int = 700
+    auto_continuity: bool = False
+    auto_memory: bool = False
+    remind_memory: bool = True
+    status: Literal["drafting", "ready", "confirmed", "discarded", "failed"]
+    content: str = ""
+    word_count: int = 0
+    edited: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+    generating_seq: int | None = None
+    created_at: str
+    updated_at: str
+    confirmed_at: str | None = None
+    segments: list[QuickWritingSegmentOut] = Field(default_factory=list)
+    progress: dict[str, Any] = Field(default_factory=dict)

@@ -163,48 +163,58 @@ def create_chapter(novel_id: str, payload: dict) -> dict:
     return get_chapter(novel_id, chapter_id)
 
 
+def _update_chapter_in_conn(
+    conn: sqlite3.Connection, novel_id: str, chapter_id: str, fields: dict
+) -> None:
+    """在已有事务连接内更新章节；无实际变更时不写库。
+
+    供 update_chapter 与 P4.1.3 章节摘要提案应用共用。
+    """
+    _chapter_row(conn, novel_id, chapter_id)
+
+    updates: dict[str, object] = {}
+    for key in ("title", "summary", "volume_number", "status"):
+        if fields.get(key) is not None:
+            updates[key] = fields[key]
+    if fields.get("status") is not None:
+        _check_status(str(fields["status"]))
+
+    if fields.get("chapter_number") is not None:
+        number = int(fields["chapter_number"])
+        dup = conn.execute(
+            "SELECT id FROM chapters"
+            " WHERE novel_id = ? AND chapter_number = ? AND id != ?",
+            (novel_id, number, chapter_id),
+        ).fetchone()
+        if dup is not None:
+            raise ServiceError(400, f"第 {number} 章已存在")
+        updates["chapter_number"] = number
+
+    # 字数永远由后端根据正文重新计算，忽略前端传入的 word_count
+    if fields.get("content") is not None:
+        content = str(fields["content"])
+        updates["content"] = content
+        updates["word_count"] = count_words(content)
+
+    if not updates:
+        return
+
+    updates["updated_at"] = _now()
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    conn.execute(
+        f"UPDATE chapters SET {assignments} WHERE id = ? AND novel_id = ?",
+        list(updates.values()) + [chapter_id, novel_id],
+    )
+    conn.execute(
+        "UPDATE novels SET updated_at = ? WHERE id = ?",
+        (_now(), novel_id),
+    )
+
+
 def update_chapter(novel_id: str, chapter_id: str, fields: dict) -> dict:
     _ensure_novel(novel_id)
     with get_connection() as conn:
-        _chapter_row(conn, novel_id, chapter_id)
-
-        updates: dict[str, object] = {}
-        for key in ("title", "summary", "volume_number", "status"):
-            if fields.get(key) is not None:
-                updates[key] = fields[key]
-        if fields.get("status") is not None:
-            _check_status(str(fields["status"]))
-
-        if fields.get("chapter_number") is not None:
-            number = int(fields["chapter_number"])
-            dup = conn.execute(
-                "SELECT id FROM chapters"
-                " WHERE novel_id = ? AND chapter_number = ? AND id != ?",
-                (novel_id, number, chapter_id),
-            ).fetchone()
-            if dup is not None:
-                raise ServiceError(400, f"第 {number} 章已存在")
-            updates["chapter_number"] = number
-
-        # 字数永远由后端根据正文重新计算，忽略前端传入的 word_count
-        if fields.get("content") is not None:
-            content = str(fields["content"])
-            updates["content"] = content
-            updates["word_count"] = count_words(content)
-
-        if not updates:
-            return get_chapter(novel_id, chapter_id)
-
-        updates["updated_at"] = _now()
-        assignments = ", ".join(f"{key} = ?" for key in updates)
-        conn.execute(
-            f"UPDATE chapters SET {assignments} WHERE id = ? AND novel_id = ?",
-            list(updates.values()) + [chapter_id, novel_id],
-        )
-        conn.execute(
-            "UPDATE novels SET updated_at = ? WHERE id = ?",
-            (_now(), novel_id),
-        )
+        _update_chapter_in_conn(conn, novel_id, chapter_id, fields)
     return get_chapter(novel_id, chapter_id)
 
 

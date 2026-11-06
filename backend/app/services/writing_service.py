@@ -39,6 +39,11 @@ from .writing_plan_schema import (
 # 段落生成中状态的保护期：超过该时长视为异常遗留，可被新的生成请求接管
 _SEGMENT_GENERATING_GUARD_SECONDS = 300
 
+# 创作调用的单次超时（秒）：剧情计划/正文生成的上下文与输出都很长，
+# 全局默认 20 秒对真实模型明显不足；此处显式放宽（ai_generation_service 上限 300 秒）
+_PLAN_CALL_TIMEOUT = 240.0
+_SEGMENT_CALL_TIMEOUT = 240.0
+
 _ACTIVE_STATUSES = ("planning", "failed", "awaiting_plan_approval")
 
 _DEFAULT_PLANNER_SYSTEM = (
@@ -569,6 +574,7 @@ async def generate_plan(novel_id: str, session_id: str, payload: dict) -> dict:
             "template_version": template_version,
             "temperature": float(payload.get("temperature", 0.6)),
             "max_tokens": int(payload.get("max_tokens") or 4096),
+            "timeout": _PLAN_CALL_TIMEOUT,
             "include_reasoning": False,
         }
     )
@@ -639,6 +645,7 @@ async def _repair_plan(novel_id, session_id, system, user, template_id,
             "template_version": template_version,
             "temperature": 0.3,
             "max_tokens": int(payload.get("max_tokens") or 4096),
+            "timeout": _PLAN_CALL_TIMEOUT,
         }
     )
     if not repair["success"] or repair.get("truncated"):
@@ -1067,6 +1074,7 @@ async def _generate_one_segment(novel_id, session_row, draft_row, segment_row,
             "template_version": template_version,
             "temperature": float(payload.get("temperature", 0.8)),
             "max_tokens": int(payload.get("max_tokens") or 4096),
+            "timeout": _SEGMENT_CALL_TIMEOUT,
             "include_reasoning": False,
         }
     )

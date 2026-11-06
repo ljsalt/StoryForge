@@ -5,11 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.ai_routes import router as ai_router
 from .api.chapter_routes import router as chapter_router
+from .api.continuity_routes import router as continuity_router
 from .api.character_relation_routes import router as character_relation_router
 from .api.character_routes import router as character_router
 from .api.model_routes import router as model_router
 from .api.novel_routes import router as novel_router
 from .api.plot_event_routes import router as plot_event_router
+from .api.quick_writing_routes import router as quick_writing_router
 from .api.routes import router
 from .api.world_routes import router as world_router
 from .api.writing_routes import router as writing_router
@@ -66,6 +68,8 @@ app.include_router(chapter_router, prefix="/api")
 app.include_router(plot_event_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(writing_router, prefix="/api")
+app.include_router(continuity_router, prefix="/api")
+app.include_router(quick_writing_router, prefix="/api")
 
 
 @app.get("/")

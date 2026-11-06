@@ -294,9 +294,14 @@ def get_relation(novel_id: str, relation_id: str) -> dict:
         return _finalize(conn, novel_id, relation_id)
 
 
-def create_relation(novel_id: str, payload: dict) -> dict:
-    _ensure_novel(novel_id)
-    now = _now()
+def _create_relation_in_conn(
+    conn: sqlite3.Connection, novel_id: str, payload: dict, now: str
+) -> str:
+    """在已有事务连接内创建关系并写入 created 历史事件，返回 relation_id。
+
+    供 create_relation 与 P4.1.3 记忆提案应用共用；业务校验失败抛 ServiceError，
+    数据库约束冲突（并发重复等）由调用方所在事务统一翻译/回滚。
+    """
     source_id = payload["source_character_id"]
     target_id = payload["target_character_id"]
     relation_type = payload["relation_type"]
@@ -304,50 +309,57 @@ def create_relation(novel_id: str, payload: dict) -> dict:
     if source_id == target_id:
         raise ServiceError(400, "人物不能与自己建立关系")
 
-    with _relation_txn() as conn:
-        # 两端都必须属于当前小说
-        _character_brief(conn, novel_id, source_id, "发起人物")
-        _character_brief(conn, novel_id, target_id, "目标人物")
-        _validate_chapter(conn, novel_id, payload.get("chapter_id"))
-        _check_active_duplicate(conn, novel_id, source_id, target_id, relation_type)
+    # 两端都必须属于当前小说
+    _character_brief(conn, novel_id, source_id, "发起人物")
+    _character_brief(conn, novel_id, target_id, "目标人物")
+    _validate_chapter(conn, novel_id, payload.get("chapter_id"))
+    _check_active_duplicate(conn, novel_id, source_id, target_id, relation_type)
 
-        relation_id = uuid4().hex
-        conn.execute(
-            """
-            INSERT INTO character_relations
-                (id, novel_id, source_character_id, target_character_id,
-                 relation_type, status, description, strength, attributes,
-                 start_time, end_time, sort_order, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-            """,
-            (
-                relation_id,
-                novel_id,
-                source_id,
-                target_id,
-                relation_type,
-                "active",
-                payload.get("description", ""),
-                payload.get("strength"),
-                _dump_json(payload.get("attributes") or {}, "自定义属性"),
-                payload.get("start_time"),
-                None,
-                now,
-                now,
-            ),
-        )
-        new_snapshot = _relation_snapshot(conn, relation_id)
-        _insert_event(
-            conn,
-            novel_id=novel_id,
-            relation_id=relation_id,
-            event_type="created",
-            title=f"建立{relation_type}关系",
-            description=payload.get("description", "") or "",
-            new_data=new_snapshot,
-            story_time=payload.get("story_time"),
-            chapter_id=payload.get("chapter_id"),
-        )
+    relation_id = uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO character_relations
+            (id, novel_id, source_character_id, target_character_id,
+             relation_type, status, description, strength, attributes,
+             start_time, end_time, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            relation_id,
+            novel_id,
+            source_id,
+            target_id,
+            relation_type,
+            "active",
+            payload.get("description", ""),
+            payload.get("strength"),
+            _dump_json(payload.get("attributes") or {}, "自定义属性"),
+            payload.get("start_time"),
+            None,
+            now,
+            now,
+        ),
+    )
+    new_snapshot = _relation_snapshot(conn, relation_id)
+    _insert_event(
+        conn,
+        novel_id=novel_id,
+        relation_id=relation_id,
+        event_type="created",
+        title=f"建立{relation_type}关系",
+        description=payload.get("description", "") or "",
+        new_data=new_snapshot,
+        story_time=payload.get("story_time"),
+        chapter_id=payload.get("chapter_id"),
+    )
+    return relation_id
+
+
+def create_relation(novel_id: str, payload: dict) -> dict:
+    _ensure_novel(novel_id)
+    now = _now()
+    with _relation_txn() as conn:
+        relation_id = _create_relation_in_conn(conn, novel_id, payload, now)
     return get_relation(novel_id, relation_id)
 
 
@@ -361,79 +373,136 @@ def create_bidirectional(novel_id: str, payload: dict) -> tuple[dict, dict]:
     return first, second
 
 
+def _update_relation_in_conn(
+    conn: sqlite3.Connection,
+    novel_id: str,
+    relation_id: str,
+    fields: dict,
+    event_info: dict | None = None,
+) -> None:
+    """在已有事务连接内更新关系并写入 updated 历史事件。
+
+    供 update_relation 与 P4.1.3 记忆提案应用共用；无实际变更时不写事件。
+    """
+    before = _relation_snapshot(conn, relation_id)
+    if before is None:
+        raise ServiceError(404, "关系不存在")
+
+    updates: dict[str, object] = {}
+    for key in ("relation_type", "description", "start_time"):
+        if fields.get(key) is not None:
+            updates[key] = fields[key]
+    if "strength" in fields:
+        updates["strength"] = fields.get("strength")
+    if fields.get("attributes") is not None:
+        updates["attributes"] = _dump_json(fields["attributes"], "自定义属性")
+
+    # 即使本次只提交 chapter_id，也要先校验章节归属再返回
+    if fields.get("chapter_id") is not None:
+        _validate_chapter(conn, novel_id, fields["chapter_id"])
+
+    if not updates:
+        return
+
+    # 如果修改 relation_type，需要检查新类型是否与其他活跃关系冲突
+    if "relation_type" in updates:
+        updated = updates["relation_type"]
+        existing = conn.execute(
+            """
+            SELECT id FROM character_relations
+            WHERE novel_id = ? AND source_character_id = (
+                SELECT source_character_id FROM character_relations WHERE id = ?
+            ) AND target_character_id = (
+                SELECT target_character_id FROM character_relations WHERE id = ?
+            ) AND relation_type = ? AND status = 'active' AND id != ?
+            LIMIT 1
+            """,
+            (
+                novel_id,
+                relation_id,
+                relation_id,
+                updated,
+                relation_id,
+            ),
+        ).fetchone()
+        if existing is not None:
+            raise ServiceError(400, "相同方向、相同类型的有效关系已存在")
+
+    updates["updated_at"] = _now()
+    assignments = ", ".join(f"{k} = ?" for k in updates)
+    conn.execute(
+        f"UPDATE character_relations SET {assignments} WHERE id = ? AND novel_id = ?",
+        list(updates.values()) + [relation_id, novel_id],
+    )
+
+    after = _relation_snapshot(conn, relation_id)
+    info = dict(event_info or {})
+    if fields.get("chapter_id") is not None:
+        info["chapter_id"] = fields["chapter_id"]
+    _insert_event(
+        conn,
+        novel_id=novel_id,
+        relation_id=relation_id,
+        event_type="updated",
+        title=info.get("title") or "关系发生变化",
+        description=info.get("description") or "",
+        previous_data=before,
+        new_data=after,
+        story_time=info.get("story_time"),
+        chapter_id=info.get("chapter_id"),
+    )
+
+
 def update_relation(
     novel_id: str, relation_id: str, fields: dict, *, event_info: dict | None = None
 ) -> dict:
     _ensure_novel(novel_id)
     with _relation_txn() as conn:
-        before = _relation_snapshot(conn, relation_id)
-        if before is None:
-            raise ServiceError(404, "关系不存在")
-
-        updates: dict[str, object] = {}
-        for key in ("relation_type", "description", "start_time"):
-            if fields.get(key) is not None:
-                updates[key] = fields[key]
-        if "strength" in fields:
-            updates["strength"] = fields.get("strength")
-        if fields.get("attributes") is not None:
-            updates["attributes"] = _dump_json(fields["attributes"], "自定义属性")
-
-        # 即使本次只提交 chapter_id，也要先校验章节归属再返回
-        if fields.get("chapter_id") is not None:
-            _validate_chapter(conn, novel_id, fields["chapter_id"])
-
-        if not updates:
-            return get_relation(novel_id, relation_id)
-
-        # 如果修改 relation_type，需要检查新类型是否与其他活跃关系冲突
-        if "relation_type" in updates:
-            updated = updates["relation_type"]
-            existing = conn.execute(
-                """
-                SELECT id FROM character_relations
-                WHERE novel_id = ? AND source_character_id = (
-                    SELECT source_character_id FROM character_relations WHERE id = ?
-                ) AND target_character_id = (
-                    SELECT target_character_id FROM character_relations WHERE id = ?
-                ) AND relation_type = ? AND status = 'active' AND id != ?
-                LIMIT 1
-                """,
-                (
-                    novel_id,
-                    relation_id,
-                    relation_id,
-                    updated,
-                    relation_id,
-                ),
-            ).fetchone()
-            if existing is not None:
-                raise ServiceError(400, "相同方向、相同类型的有效关系已存在")
-
-        updates["updated_at"] = _now()
-        assignments = ", ".join(f"{k} = ?" for k in updates)
-        conn.execute(
-            f"UPDATE character_relations SET {assignments} WHERE id = ? AND novel_id = ?",
-            list(updates.values()) + [relation_id, novel_id],
-        )
-
-        after = _relation_snapshot(conn, relation_id)
-        info = dict(event_info or {})
-        if fields.get("chapter_id") is not None:
-            info["chapter_id"] = fields["chapter_id"]
-        _insert_event(
-            conn,
-            novel_id=novel_id,
-            relation_id=relation_id,
-            event_type="updated",
-            title=info.get("title") or "关系发生变化",
-            description=info.get("description") or "",
-            previous_data=before,
-            new_data=after,
-            story_time=info.get("story_time"),
-            chapter_id=info.get("chapter_id"),
-        )
+        _update_relation_in_conn(conn, novel_id, relation_id, fields, event_info)
     return get_relation(novel_id, relation_id)
+
+
+def _end_relation_in_conn(
+    conn: sqlite3.Connection,
+    novel_id: str,
+    relation_id: str,
+    *,
+    event_info: dict | None = None,
+    now: str,
+) -> None:
+    """在已有事务连接内软终止关系并写入 ended 历史事件。
+
+    供 end_relation 与 P4.1.3 记忆提案应用共用。
+    """
+    before_row = _relation_row(conn, novel_id, relation_id)
+    before = _relation_snapshot(conn, relation_id)
+    if before_row["status"] == "ended":
+        raise ServiceError(400, "关系已经结束")
+
+    conn.execute(
+        """
+        UPDATE character_relations
+           SET status = 'ended', end_time = ?, updated_at = ?
+         WHERE id = ? AND novel_id = ?
+        """,
+        (now, now, relation_id, novel_id),
+    )
+
+    after = _relation_snapshot(conn, relation_id)
+    info = dict(event_info or {})
+    _validate_chapter(conn, novel_id, info.get("chapter_id"))
+    _insert_event(
+        conn,
+        novel_id=novel_id,
+        relation_id=relation_id,
+        event_type="ended",
+        title=info.get("title") or f"关系结束",
+        description=info.get("description") or "",
+        previous_data=before,
+        new_data=after,
+        story_time=info.get("story_time"),
+        chapter_id=info.get("chapter_id"),
+    )
 
 
 def end_relation(
@@ -442,35 +511,7 @@ def end_relation(
     _ensure_novel(novel_id)
     now = _now()
     with get_connection() as conn:
-        before_row = _relation_row(conn, novel_id, relation_id)
-        before = _relation_snapshot(conn, relation_id)
-        if before_row["status"] == "ended":
-            raise ServiceError(400, "关系已经结束")
-
-        conn.execute(
-            """
-            UPDATE character_relations
-               SET status = 'ended', end_time = ?, updated_at = ?
-             WHERE id = ? AND novel_id = ?
-            """,
-            (now, now, relation_id, novel_id),
-        )
-
-        after = _relation_snapshot(conn, relation_id)
-        info = dict(event_info or {})
-        _validate_chapter(conn, novel_id, info.get("chapter_id"))
-        _insert_event(
-            conn,
-            novel_id=novel_id,
-            relation_id=relation_id,
-            event_type="ended",
-            title=info.get("title") or f"关系结束",
-            description=info.get("description") or "",
-            previous_data=before,
-            new_data=after,
-            story_time=info.get("story_time"),
-            chapter_id=info.get("chapter_id"),
-        )
+        _end_relation_in_conn(conn, novel_id, relation_id, event_info=event_info, now=now)
     return get_relation(novel_id, relation_id)
 
 

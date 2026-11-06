@@ -261,7 +261,9 @@ export function generateWritingPlan(
     usage: Record<string, number>
     latency_ms: number | null
     task_id: string | null
-  }>(`/api/novels/${novelId}/writing-sessions/${sessionId}/plan/generate`, payload)
+  }>(`/api/novels/${novelId}/writing-sessions/${sessionId}/plan/generate`, payload, {
+    timeout: 310000,
+  })
 }
 
 export function getWritingPlan(novelId: string, sessionId: string) {
@@ -331,7 +333,7 @@ export function generateWritingSegment(
   return api.post<SegmentGenerateResult>(
     `/api/novels/${novelId}/writing-sessions/${sessionId}/draft/segments/generate`,
     payload,
-    { timeout: 180000 },
+    { timeout: 310000 },
   )
 }
 
@@ -344,7 +346,7 @@ export function regenerateWritingSegment(
   return api.post<SegmentGenerateResult>(
     `/api/novels/${novelId}/writing-sessions/${sessionId}/draft/segments/${sequence}/regenerate`,
     payload,
-    { timeout: 180000 },
+    { timeout: 310000 },
   )
 }
 

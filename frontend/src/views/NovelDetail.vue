@@ -91,6 +91,9 @@ watch(
             >
               设为默认项目
             </n-button>
+            <n-button size="small" @click="router.push(`/novels/${novel.id}/quick-writing`)">
+              快速写作
+            </n-button>
             <n-button size="small" type="primary" @click="router.push(`/novels/${novel.id}/writing`)">
               进入创作工作台
             </n-button>

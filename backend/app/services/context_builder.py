@@ -97,7 +97,20 @@ def build_context(
     token_budget: int | None = None,
     pov: str = "author",
     user_requirement: str = "",
+    extra_sections: list[dict] | None = None,
+    exclude_sections: list[str] | None = None,
 ) -> dict:
+    """组装上下文。
+
+    extra_sections：调用方提供的额外分区，元素形如
+    {"key", "title", "content", "priority", "required"}，与内置分区一起
+    参与同一 token 预算竞争（例如 P4.1.3 把当前章节正文作为高优先级
+    必需分区注入，保证正文优先于非必要历史信息保留）。
+
+    exclude_sections：需要从内置分区中剔除的分区 key 列表，
+    用于快速写作的「最近章节 / 自定义」上下文模式。
+    剔除发生在预算分配之前，不会占用 token。
+    """
     if pov not in _POVS:
         raise ServiceError(400, "不支持的视角类型")
     settings = get_settings()
@@ -106,6 +119,9 @@ def build_context(
 
     warnings: list[str] = []
     omitted_sections: list[dict] = []
+    excluded = {
+        str(item).strip() for item in (exclude_sections or []) if str(item).strip()
+    }
 
     with get_connection() as conn:
         novel = _fetch_novel(conn, novel_id)
@@ -113,6 +129,21 @@ def build_context(
             conn, novel, chapter_id=chapter_id, character_ids=character_ids,
             pov=pov, user_requirement=user_requirement, warnings=warnings,
         )
+        if excluded:
+            sections = [section for section in sections if section.key not in excluded]
+
+    for item in extra_sections or []:
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        section = _Section(
+            str(item.get("key") or "extra"),
+            str(item.get("title") or "补充上下文"),
+            int(item.get("priority") or 50),
+            bool(item.get("required")),
+        )
+        section.lines.append(content)
+        sections.append(section)
 
     # 按优先级从高到低纳入预算；每次都用“最终文本写法”精确计费，
     # 因此区内截断后不会再出现总预算超限

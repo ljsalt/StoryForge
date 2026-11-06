@@ -64,6 +64,18 @@ const router = createRouter({
           meta: { title: '创作工作台' },
         },
         {
+          path: 'novels/:novelId/quick-writing',
+          name: 'novel-quick-writing',
+          component: () => import('../views/QuickWritingView.vue'),
+          meta: { title: '快速写作' },
+        },
+        {
+          path: 'novels/:novelId/chapters/:chapterId/continuity',
+          name: 'chapter-continuity',
+          component: () => import('../views/ChapterContinuityView.vue'),
+          meta: { title: '连续性与记忆' },
+        },
+        {
           path: 'novels/:id/plot-events',
           name: 'novel-plot-events',
           component: () => import('../views/PlotEvents.vue'),
